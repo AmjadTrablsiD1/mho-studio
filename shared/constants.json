@@ -1,0 +1,142 @@
+{
+  "_comment": "RULE 11: the single source of truth. No literal number, path, port, timeout, limit or label may appear anywhere else. core/src/constants.ts types it; server, sim and ui import it through core. Instrument command facts (headers, ranges, option lists) live in core/src/registry/, next to the code that interprets them, because they come from the programming guide rather than from us.",
+  "app": {
+    "id": "mho-studio",
+    "name": "MHO Studio",
+    "version": "0.1.0",
+    "icon": "📈",
+    "tagline": "Remote bench for the RIGOL MHO984"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 0,
+    "whoami_token": "mho-studio-1",
+    "token_header": "x-mho-studio",
+    "shutdown_grace_ms": 4000,
+    "max_body_bytes": 4194304,
+    "no_viewer_stop_s": 20
+  },
+  "paths": {
+    "config_dir": "~/.config/mho-studio",
+    "state_dir": "~/.local/state/mho-studio",
+    "port_file": "~/.local/state/mho-studio/port",
+    "settings_file": "~/.config/mho-studio/settings.json",
+    "presets_dir": "~/.config/mho-studio/presets",
+    "log_file": "~/.local/state/mho-studio/scpi.log"
+  },
+  "instrument": {
+    "vendor": "RIGOL TECHNOLOGIES",
+    "model": "MHO984",
+    "family": "MHO900",
+    "scpi_port": 5555,
+    "connect_timeout_ms": 2500,
+    "query_timeout_ms": 4000,
+    "block_timeout_ms": 60000,
+    "reconnect_backoff_ms": 1500,
+    "analog_channels": 4,
+    "digital_channels": 16,
+    "math_channels": 4,
+    "awg_channels": 2,
+    "bus_channels": 4,
+    "ref_channels": 10,
+    "divisions_x": 10,
+    "divisions_y": 8,
+    "normal_points": 1000,
+    "raw_chunk_points": 250000,
+    "invalid_above": 9e37,
+    "bandwidth_hz": 800000000,
+    "bandwidth_all_channel_hz": 400000000,
+    "max_sample_rate": [4000000000, 2000000000, 1000000000, 1000000000],
+    "max_memory_pts": [100000000, 50000000, 25000000, 25000000],
+    "max_memory_pts_option": [500000000, 250000000, 125000000, 125000000],
+    "adc_bits": 12,
+    "timebase_min_s": 5e-10,
+    "timebase_max_s": 500,
+    "vscale_min_1m": 0.001,
+    "vscale_max_1m": 10,
+    "vscale_min_50": 0.0002,
+    "vscale_max_50": 1,
+    "offset_limits_1m": [[0.065, 1], [0.274, 10], [2.79, 20], [10, 100]],
+    "offset_limits_50": [[0.136, 1], [1, 4]],
+    "trigger_status": { "TD": "Triggered", "WAIT": "Waiting", "RUN": "Running", "AUTO": "Auto", "STOP": "Stopped" },
+    "options": ["RLU-05", "AFG100", "AFG50", "BND", "AUDio", "CAN-FD", "FLEX", "AERO", "BWU03T05", "BWU03T08", "BWU05T08"]
+  },
+  "wire": {
+    "_comment": "How waveform bytes are laid out. WORD byte order is detected from the data and then locked (core/src/wave/decode.ts); prefer_word_format reads 12-bit data as 16-bit words so no resolution is lost.",
+    "prefer_word_format": true,
+    "word_order_default": "little",
+    "word_order_confidence": 8
+  },
+  "loops": {
+    "live_period_ms": 40,
+    "status_period_ms": 250,
+    "watch_period_ms": 1500,
+    "measure_period_ms": 350,
+    "counter_period_ms": 500,
+    "after_write_settle_ms": 60,
+    "idle_backoff_ms": 400
+  },
+  "measure": {
+    "max_items": 12,
+    "stats_window": 2000
+  },
+  "deep": {
+    "max_points_per_channel": 25000000,
+    "view_columns": 1600,
+    "csv_max_rows": 5000000
+  },
+  "spectrum": {
+    "windows": ["hann", "blackman-harris", "flattop", "rect"],
+    "default_window": "hann",
+    "peaks": 8,
+    "harmonics": 10,
+    "floor_dbv": -140
+  },
+  "bode": {
+    "start_hz": 100,
+    "stop_hz": 1000000,
+    "points": 30,
+    "amplitude_vpp": 1,
+    "awg": 1,
+    "in_channel": 1,
+    "out_channel": 2,
+    "periods_on_screen": 4,
+    "settle_ms": 120,
+    "fill_divisions": 5,
+    "max_retries": 3,
+    "min_hz": 0.01,
+    "max_hz": 100000000
+  },
+  "sim": {
+    "_comment": "The simulated bench behind 'Simulated MHO984'. Everything it does is listed in sim/README.md; nothing in the app treats it differently from a real scope.",
+    "idn_serial": "SIM0000000001",
+    "idn_firmware": "00.01.00.SIM",
+    "options": ["RLU-05", "AFG100"],
+    "noise_vrms": 0.0006,
+    "filter_fc_hz": 20000,
+    "filter_q": 0.707,
+    "clock_hz": 1000000,
+    "clock_v": 3.3,
+    "clock_rise_s": 4e-9,
+    "clock_ring_hz": 180000000,
+    "clock_ring_decay_s": 1.2e-8,
+    "clock_ring_fraction": 0.12,
+    "uart_baud": 115200,
+    "uart_text": "MHO984\r\n",
+    "uart_period_s": 0.002,
+    "uart_v": 3.3,
+    "table_points": 8192,
+    "harmonics": 41,
+    "latency_ms": 2
+  },
+  "ui": {
+    "storage_prefix": "mho-studio",
+    "default_theme": "midnight",
+    "sse_retry_ms": 1500,
+    "drag_write_ms": 90,
+    "toast_ms": 5000,
+    "persistence_decay": 0.82,
+    "console_history": 200,
+    "zoom_steps": [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6]
+  }
+}

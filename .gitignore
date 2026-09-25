@@ -1,0 +1,31 @@
+# --- Node / Vite ---
+node_modules/
+ui/dist/
+dist/
+.vite/
+*.tsbuildinfo
+
+# --- Playwright ---
+test-results/
+playwright-report/
+ui/tests/screenshots/*.png
+
+# --- macOS ---
+.DS_Store
+*.app/
+
+# --- app runtime: never commit the user's own state ---
+*.log
+logs/
+.env
+.env.local
+
+# --- Python (none in this app; kept so the launcher tool's cache never lands) ---
+__pycache__/
+
+# Keep: package-lock.json, shared/constants.json, shared/themes.json, docs/*.png
+!docs/*.png
+
+# --- the programming guide's text is extracted locally, never committed ---
+*.pdf
+pg.txt
