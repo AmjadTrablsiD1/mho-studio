@@ -25,8 +25,9 @@ screen cannot:
 4. **A simulated MHO984** that speaks the same SCPI over TCP, so all of the
    above works — and is tested — with no instrument on the desk.
 
-It talks to the scope over LAN, raw SCPI on TCP port 5555. No VISA, no native
-code, no Python.
+It talks to the scope over LAN (raw SCPI on TCP port 5555) or USB (USB-TMC on
+the rear USB Device port). No VISA, no Python; the only native code is the
+optional prebuilt `usb` package.
 
 ## Layers
 
@@ -35,8 +36,10 @@ ui/      React 19 + Vite. Chrome, the scope canvas, plots, generic control widge
   │      Imports core/ (registry, formatter, DSP) directly; knows nothing of TCP.
   │ HTTP (JSON) + Server-Sent Events, 127.0.0.1 only, per-launch token
   ▼
-server/  Node 22.18+, TypeScript run directly (type stripping). Owns the socket:
-  │      scpi.ts (framing, strict request/reply, exclusive sections), scope.ts
+server/  Node 22.18+, TypeScript run directly (type stripping). Owns the link:
+  │      transport.ts (TCP, with the macOS nc fallback) or usbtmc.ts (USB-TMC
+  │      as a Duplex stream), scpi.ts (framing, strict request/reply, exclusive
+  │      sections), scope.ts
   │      (value mirror, live loop, measurements), deep.ts, bode.ts, discover.ts,
   │      store.ts (settings + presets), main.ts (routes only).
   │ imports                                  ┌──────────────────────────────┐
@@ -44,7 +47,8 @@ server/  Node 22.18+, TypeScript run directly (type stripping). Owns the socket:
 core/    Pure TypeScript. No DOM, no node:   │ instrument.ts (dispatcher on │
          imports, no I/O.                    │ the registry), bench.ts      │
            scpi/     header forms, value     │ (signals), png.ts, server.ts │
-                     encode/parse, #N blocks │ (TCP 5555-style)             │
+                     encode/parse, #N blocks,│ (TCP 5555-style)             │
+                     USB-TMC headers
            wave/     preamble → volts, word  └──────────────────────────────┘
                      order, 1-2-5 knobs, offset limits
            dsp/      FFT, windows, spectrum/THD, measurements, lock-in,
@@ -100,6 +104,25 @@ console's completion.
    receive them outside React; `ui/src/scope/screen.ts` draws them in the next
    animation frame, mapping time with the preamble and volts with the mirrored
    V/div and offset.
+
+## The two links
+
+`server/scpi.ts` only needs a byte stream (a Node `Duplex`): SCPI text and #N
+blocks out, the same back. Over LAN that is the TCP socket. Over USB it is
+`UsbtmcStream` (`server/usbtmc.ts`): each message written goes out as one
+DEV_DEP_MSG_OUT on the bulk-OUT pipe; if its header contains a `?`
+(`core/scpi/usbtmc.ts → expectsReply`) the stream then sends
+REQUEST_DEV_DEP_MSG_IN for up to `usb.request_bytes` and reads DEV_DEP_MSG_IN
+from bulk-IN — header in the first transfer, continuation transfers without —
+until EOM, or until the reply is visibly complete (a line ending in `\n`, or a
+whole #N block) for instruments that leave EOM clear. Replies are pushed into
+the stream as they arrive, so progress bars work over USB too. On open it
+claims the USB-TMC interface (class FE/03), clears halts and sends
+INITIATE_CLEAR so nothing a previous session left is taken as an answer.
+
+Tests run the complete service over `server/test/virtual-usbtmc.ts`: the
+simulator behind real USB-TMC framing, with replies split into small
+transfers, a no-EOM mode and unplugging.
 
 ## Data flow — one write
 
@@ -177,7 +200,9 @@ query with behaviour, `sim/bench.ts` for a signal; list it in `sim/README.md`.
 
 | Decision | Why | Rejected alternative |
 |---|---|---|
-| Raw SCPI over TCP 5555 from Node | No VISA/NI stack, identical on macOS and Windows, one socket | VISA via ffi; USBTMC (needs libusb native build) — see TODO |
+| Raw SCPI over TCP 5555 from Node | No VISA/NI stack, identical on macOS and Windows, one socket | VISA via ffi |
+| USB-TMC implemented in TypeScript over `usb` v3 (nusb, prebuilt) | Framing is small and testable; no libusb or compiler; macOS needs no driver | VISA (NI-VISA install, poor macOS support); `usb` v2 (libusb) |
+| mDNS + ARP in discovery | A direct cable with 169.254.x.x addresses is a /16 — unscannable; LXI instruments answer mDNS | Scanning /16 |
 | All TypeScript (Node server + React) | His standing rule: no Python in the GUI; one language end to end | Python core |
 | Browser UI served by a local Node server | Same stack as his other studios; no 150 MB Electron | Electron |
 | Registry generated from the guide, curated on top | 655 commands cannot be hand-written without mistakes; facts stay traceable to §numbers | Hand-written command table |

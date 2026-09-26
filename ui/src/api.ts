@@ -7,8 +7,11 @@ import type { Value } from "../../core/src/scpi/values.ts";
 import type { Slot } from "../../core/src/registry/measurements.ts";
 
 export type Identity = { vendor: string; model: string; serial: string; firmware: string; raw: string };
+export type UsbInfo = { id: string; vendorId: number; productId: number; manufacturer: string | null; product: string | null; serial: string | null; rigol: boolean; usbtmc: boolean | null };
 export type Link = {
   state: "idle" | "connecting" | "connected" | "lost";
+  kind: "tcp" | "usb" | "sim";
+  usb: UsbInfo | null;
   host: string;
   port: number;
   sim: boolean;
@@ -20,6 +23,14 @@ export type Link = {
   wordOrderLocked: boolean;
   modelWarning: string | null;
 };
+/** How to name where a link goes, everywhere the interface shows it. */
+export function linkAddress(l: Link | null): string {
+  if (!l) return "—";
+  if (l.kind === "sim") return "simulated bench";
+  if (l.kind === "usb") return `USB${l.usb?.serial ? ` · ${l.usb.serial}` : ""}`;
+  return `${l.host}:${l.port}`;
+}
+
 export type StatsSnap = { last: number | null; n: number; mean: number | null; min: number | null; max: number | null; std: number | null };
 export type MeasureRow = { slot: Slot; value: number | null; stats: StatsSnap; cross: number | null };
 export type Traffic = { t: number; dir: "out" | "in"; text: string; bytes?: number };
@@ -39,7 +50,7 @@ export type BodeState = {
 export type DeepMeta = { channels: { src: string; points: number; pre: { xinc: number; xorigin: number } }[]; capturedAt: string; points: number; xinc: number; xorigin: number; seconds: number };
 export type DeepProgress = { src: string; done: number; total: number; channel: number; channels: number; bytesPerSec: number };
 export type Preset = { name: string; savedAt: string; model: string; firmware: string; bytes: number };
-export type Settings = { host: string; port: number; recent: string[]; lastWasSim: boolean };
+export type Settings = { host: string; port: number; recent: string[]; lastKind: "tcp" | "usb" | "sim" | null; usbId: string | null };
 
 export type Trace = { src: string; points: number; xinc: number; xorigin: number; volts: Float32Array };
 export type Frame = { t: number; seq: number; status: string; traces: Trace[] };

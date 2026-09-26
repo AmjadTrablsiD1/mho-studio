@@ -45,10 +45,16 @@ export class ScpiClient {
 
   async open(host: string, port: number): Promise<void> {
     this.close("reopen");
-    this.host = host;
-    this.port = port;
     const conn = await connectTo(host, port, C.instrument.connect_timeout_ms);
     conn.setNoDelay?.(true);
+    this.attach(conn, host, port);
+  }
+
+  /** Use an already-open byte stream (the USB-TMC link, or a test's virtual device). */
+  attach(conn: Conn, host: string, port: number): void {
+    this.close("reopen");
+    this.host = host;
+    this.port = port;
     this.conn = conn;
     this.reader.clear();
     conn.on("data", (d: Buffer) => {

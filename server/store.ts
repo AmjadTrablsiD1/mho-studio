@@ -12,12 +12,17 @@ export function expand(p: string): string {
   return p.startsWith("~/") ? join(home, p.slice(2)) : p;
 }
 
-export type Settings = { host: string; port: number; recent: string[]; lastWasSim: boolean };
-const DEFAULTS: Settings = { host: "", port: C.instrument.scpi_port, recent: [], lastWasSim: false };
+/** lastKind: how the last successful connection was made, so the next launch reconnects the same way. */
+export type Settings = { host: string; port: number; recent: string[]; lastKind: "tcp" | "usb" | "sim" | null; usbId: string | null };
+const DEFAULTS: Settings = { host: "", port: C.instrument.scpi_port, recent: [], lastKind: null, usbId: null };
 
 export function loadSettings(): Settings {
   try {
-    return { ...DEFAULTS, ...JSON.parse(readFileSync(expand(C.paths.settings_file), "utf8")) };
+    const raw = JSON.parse(readFileSync(expand(C.paths.settings_file), "utf8"));
+    // 0.1.0 wrote lastWasSim instead of lastKind
+    const lastKind = raw.lastKind ?? (raw.lastWasSim ? "sim" : raw.host ? "tcp" : null);
+    const { lastWasSim: _old, ...rest } = raw;
+    return { ...DEFAULTS, ...rest, lastKind };
   } catch {
     return { ...DEFAULTS };
   }

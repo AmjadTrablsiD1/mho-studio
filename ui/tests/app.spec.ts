@@ -233,3 +233,20 @@ test("fold: every control the interface names is on screen at laptop sizes", asy
     expect(await clippedElements(page, [".app-header > *", ".toolbar > *", ".status-bar"])).toEqual([]);
   }
 });
+
+test("connect screen: LAN, USB and simulator tabs; USB lists what is plugged in", async ({ page }, info) => {
+  test.skip(info.project.metadata.theme !== "midnight", "one pass is enough");
+  await open(page, "midnight");
+  await api(page, "disconnect");
+  await expect(page.getByTestId("connect-card")).toBeVisible();
+  await page.getByTestId("tab-usb").click();
+  // This machine has no USB instrument: the tab must say so rather than fail.
+  await expect(page.getByTestId("usb-tab")).toContainText(/No RIGOL or USB-TMC device is connected|USB support did not load/);
+  await expect(page.getByTestId("usb-tab")).toContainText(/macOS|Windows|Linux/);
+  await page.screenshot({ path: `${shots}connect-usb.png` });
+  await page.getByTestId("usb-connect-first").click();
+  await expect(page.locator(".toast.error")).toContainText(/No RIGOL or USB-TMC instrument is connected by USB/);
+  await page.getByTestId("tab-sim").click();
+  await page.getByTestId("use-sim").click();
+  await expect(page.getByTestId("link-pill")).toContainText("MHO984");
+});

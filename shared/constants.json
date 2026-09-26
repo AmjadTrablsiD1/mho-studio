@@ -61,6 +61,12 @@
     "trigger_status": { "TD": "Triggered", "WAIT": "Waiting", "RUN": "Running", "AUTO": "Auto", "STOP": "Stopped" },
     "options": ["RLU-05", "AFG100", "AFG50", "BND", "AUDio", "CAN-FD", "FLEX", "AERO", "BWU03T05", "BWU03T08", "BWU05T08"]
   },
+  "usb": {
+    "_comment": "USB-TMC over the rear USB Device port (server/usbtmc.ts). request_bytes is how much of a reply is asked for per REQUEST_DEV_DEP_MSG_IN; replies longer than that come in several.",
+    "request_bytes": 1048576,
+    "write_timeout_ms": 5000,
+    "read_timeout_ms": 60000
+  },
   "wire": {
     "_comment": "How waveform bytes are laid out. WORD byte order is detected from the data and then locked (core/src/wave/decode.ts); prefer_word_format reads 12-bit data as 16-bit words so no resolution is lost.",
     "prefer_word_format": true,

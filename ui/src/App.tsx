@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { C } from "../../core/src/constants.ts";
 import { key } from "../../core/src/registry/controls.ts";
 import { fmt } from "../../core/src/format.ts";
-import { action, attempt, dismissToast, getLive, setConfirmer, useLive, useToasts, writeControl } from "./api.ts";
+import { action, attempt, dismissToast, getLive, linkAddress, setConfirmer, useLive, useToasts, writeControl } from "./api.ts";
 import { getUi, setUi, useUi, type View } from "./uistate.ts";
 import { applyTheme, currentTheme } from "./theme.ts";
 import { Icon } from "./components/Icons.tsx";
@@ -144,7 +144,7 @@ function Header({ onLink, onShot }: { onLink: () => void; onShot: () => void }) 
         {connected ? (
           <>
             <strong>{link!.idn?.model ?? "?"}</strong>
-            {!link!.sim && <span className="mono">{link!.host}</span>}
+            {!link!.sim && <span className="mono">{link!.kind === "usb" ? "USB" : link!.host}</span>}
           </>
         ) : link?.state === "lost" ? (
           <strong>Reconnecting…</strong>
@@ -261,7 +261,7 @@ function StatusBar() {
       {link?.state === "connected" && (
         <>
           <span>{link.idn?.serial} · fw <strong>{link.idn?.firmware}</strong></span>
-          <span>link <strong>{link.transport ?? "tcp"}</strong> {link.sim ? "(simulated bench)" : `${link.host}:${link.port}`}</span>
+          <span>link <strong>{link.transport ?? "tcp"}</strong> {linkAddress(link)}</span>
           {stats && <span>round trip <strong>{stats.rttMs === null ? "—" : `${stats.rttMs.toFixed(1)} ms`}</strong></span>}
           {stats && <span><strong>{stats.fps.toFixed(1)}</strong> screens/s</span>}
           <span title="WORD byte order is detected from the data (see Instrument)">word <strong>{link.wordOrder}{link.wordOrderLocked ? "" : "?"}</strong></span>

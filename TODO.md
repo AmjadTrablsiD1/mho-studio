@@ -20,6 +20,8 @@
 - Simulated MHO984 on TCP with a bench (generator → filter, clock, UART), modelling acquisition, trigger, WORD/BYTE/ASCII transfer, RAW memory, measurements, counter, DVM, bus table, screenshots.
 - Tests: 32 core (two worked examples per formula), 9 service tests over TCP against the simulator, 13 Playwright UI flows in both themes (24 runs) with axe and the fold probe at 1366×768 and 1440×900.
 - Launchers: `.command`, `.app`, App Launcher tile, `.bat` (untested).
+- USB-TMC link on the rear USB Device port (`server/usbtmc.ts`), with reconnect on replug and remembered for the next launch; tested over a virtual USB-TMC device.
+- Discovery also finds a scope on a direct cable (mDNS for LXI services + the ARP table), not only on ordinary /24 networks.
 
 ## Doing
 
@@ -29,7 +31,7 @@
 
 1. **First session on the real MHO984.** Check, in this order: `*IDN?` and options; WORD byte order is detected and locked (Instrument view); traces overlay the scope's own screen (Screenshot) at several V/div and offsets; `:MEASure:ITEM?` agrees with the cross-check; deep capture of 25 Mpts (is 250 000 points per read accepted? adjust `instrument.raw_chunk_points`); Bode on a known RC. Record anything that differs from the guide in `sim/README.md` and make the simulator match.
 2. **Frame rate on hardware.** If the LAN round trip makes 4 channels slow, read `:WAVeform:PREamble?` only when settings change, or use BYTE for the live view.
-3. **USB-TMC**, for a scope without a network: needs a native `usb` module (libusb) per platform — only if LAN is not an option.
+3. **USB on the real scope:** note its USB product ID and whether it sets EOM; check a 25 Mpt deep read over USB and the frame rate; on Windows, confirm the Zadig/WinUSB steps; on Linux, the udev rule.
 4. **Reference waveforms in the app**: freeze a trace as an overlay (the instrument's own REF1–10 are already in All settings).
 5. **Mask test and waveform record/playback panels** with their results (today: settings only, in All settings).
 6. **Jitter / eye analysis** from deep memory (time-interval error from edge crossings).

@@ -6,8 +6,8 @@ your computer, every setting of the instrument, and the analysis its own screen
 cannot do — deep-memory capture, FFT with THD, a Bode sweep with the built-in
 generator, bus tables, presets, a SCPI console.
 
-All TypeScript (Node + React). Talks to the scope over LAN, raw SCPI on port 5555 —
-no VISA, no drivers. Comes with a **simulated MHO984** so it works with no
+All TypeScript (Node + React). Talks to the scope over **LAN** (raw SCPI on port
+5555) or **USB** (USB-TMC on the rear USB Device port) — no VISA, no NI drivers. Comes with a **simulated MHO984** so it works with no
 instrument connected.
 
 ![Scope, midnight](docs/scope-midnight.png)
@@ -36,7 +36,30 @@ Windows: `run-mho-studio.bat` — **untested** (written on a Mac).
 3. In MHO Studio type the IP (port 5555) and **Connect**, or **Find instruments
    on this network** to scan your subnet for anything that answers `*IDN?`.
 
-It reconnects by itself if the link drops, and to the same scope next launch.
+No router? A cable straight from the scope to the computer works: either give both
+ends addresses in one subnet (scope `192.168.10.2`, computer `192.168.10.1`, mask
+`255.255.255.0`), or leave both on automatic — the scan finds a scope on a
+self-assigned `169.254.x.x` address through mDNS (it announces itself as an LXI
+instrument) and the ARP table.
+
+### Or over USB
+
+Connect the scope's **rear USB Device port** (square type-B socket; the front USB
+port is for memory sticks) to the computer with a data cable, choose the **USB**
+tab, and **Connect**. It speaks USB-TMC through the `usb` package (prebuilt, no
+compiler, no VISA).
+
+- **macOS:** nothing to install.
+- **Windows:** the scope's USB interface needs the WinUSB driver. If NI-VISA or
+  RIGOL UltraSigma installed its own driver, switch it once with
+  [Zadig](https://zadig.akeo.ie/) (*Options → List all devices*, pick the RIGOL
+  device, *WinUSB*, *Replace driver*). VISA software then no longer sees it over USB.
+- **Linux:** the kernel's `usbtmc` driver is detached on connect; your user needs
+  access, e.g. `/etc/udev/rules.d/99-rigol.rules`:
+  `SUBSYSTEM=="usb", ATTR{idVendor}=="1ab1", MODE="0660", GROUP="plugdev"`.
+
+It reconnects by itself if the link drops (LAN or USB, including unplug and
+replug), and the same way to the same scope next launch.
 On macOS, if the scope answers `ping` but not the app, allow Node under
 *System Settings → Privacy & Security → Local Network* (the app also falls back
 to `/usr/bin/nc`, which is exempt).
@@ -85,7 +108,7 @@ Keys: <kbd>Space</kbd> run/stop, <kbd>S</kbd> single, <kbd>A</kbd> autoset,
 ## Tests
 
 ```bash
-cd server && npm test        # 32 core + 9 service tests (TCP, against the simulator)
+cd server && npm test        # core, service over TCP, service over virtual USB-TMC, discovery
 cd ui && npx playwright test # 13 UI flows × 2 themes (24 runs), axe, fold probe at 1366×768 / 1440×900
 ```
 
@@ -107,7 +130,10 @@ cd ui && npx playwright test # 13 UI flows × 2 themes (24 runs), axe, fold prob
 - **The instrument's own Bode option** cannot return its curve over SCPI; the
   app's own sweep replaces it (needs the AFG50/AFG100 option, as the built-in
   one does).
-- **LAN only.** USB-TMC would need a native USB module (TODO).
+- **USB is untested on hardware.** The USB-TMC path is tested end to end against
+  a virtual USB-TMC device wrapping the simulator (framing, multi-transfer replies,
+  a missing end-of-message flag, unplugging), but not yet against the real scope,
+  its USB product ID, or Windows/Linux drivers.
 - The window needs at least 1200 × 680 px.
 - The `.bat` launcher is untested.
 - One UI test run of four showed an unexplained failure in the first test that

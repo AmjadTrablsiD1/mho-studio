@@ -17,6 +17,7 @@ import { HttpError, ScopeService } from "./scope.ts";
 import { DeepStore } from "./deep.ts";
 import { BodeRunner, checkConfig } from "./bode.ts";
 import { discover } from "./discover.ts";
+import { listUsb } from "./usbtmc.ts";
 import { deletePreset, expand, listPresets, loadSettings, readPreset, savePreset } from "./store.ts";
 import { resetTransport } from "./transport.ts";
 
@@ -180,10 +181,11 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
     method: "POST", path: /^\/api\/connect$/, mutate: true,
     handler: async (req, res) => {
       const b = await body(req);
-      json(res, 200, await scope.connect({ host: String(b.host ?? ""), port: num(b.port, C.instrument.scpi_port), sim: b.sim === true }));
+      json(res, 200, await scope.connect({ host: String(b.host ?? ""), port: num(b.port, C.instrument.scpi_port), sim: b.sim === true, usb: b.usb === true, usbId: b.usbId ? String(b.usbId) : null }));
     },
   },
   { method: "POST", path: /^\/api\/disconnect$/, mutate: true, handler: async (_q, res) => json(res, 200, await scope.disconnect()) },
+  { method: "POST", path: /^\/api\/usb$/, mutate: true, handler: async (_q, res) => json(res, 200, await listUsb()) },
   { method: "POST", path: /^\/api\/discover$/, mutate: true, handler: async (req, res) => json(res, 200, await discover(num((await body(req)).port, C.instrument.scpi_port))) },
   { method: "POST", path: /^\/api\/transport\/reset$/, mutate: true, handler: async (_q, res) => (resetTransport(), json(res, 200, { ok: true })) },
   // ------------------------------------------------------------ settings
@@ -412,8 +414,10 @@ server.listen(Number(explicitPort ?? C.server.port), C.server.host, async () => 
   // Reconnect to where we were last time, without blocking the window.
   const s = loadSettings();
   if (flag("sim")) void scope.connect({ sim: true }).catch(() => {});
-  else if (!flag("no-autoconnect") && s.lastWasSim) void scope.connect({ sim: true }).catch(() => {});
-  else if (!flag("no-autoconnect") && s.host) void scope.connect({ host: s.host, port: s.port }).catch(() => {});
+  else if (flag("no-autoconnect")) return;
+  else if (s.lastKind === "sim") void scope.connect({ sim: true }).catch(() => {});
+  else if (s.lastKind === "usb") void scope.connect({ usb: true, usbId: s.usbId }).catch(() => {});
+  else if (s.lastKind === "tcp" && s.host) void scope.connect({ host: s.host, port: s.port }).catch(() => {});
 });
 
 let shuttingDown = false;

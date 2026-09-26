@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { C } from "../../../core/src/constants.ts";
 import { fmt } from "../../../core/src/format.ts";
-import { action, attempt, post, postBytes, readGroup, useLive } from "../api.ts";
+import { action, attempt, linkAddress, post, postBytes, readGroup, useLive } from "../api.ts";
 import { Ctl, GroupPanel } from "../components/Controls.tsx";
 
 export function InstrumentView() {
@@ -46,7 +46,8 @@ export function InstrumentView() {
           <div className="card">
             <div className="card-head">Link</div>
             <div className="card-body">
-              <div className="metric-row"><span>Address</span><strong>{link?.sim ? "127.0.0.1 (simulated bench)" : `${link?.host}:${link?.port}`}</strong></div>
+              <div className="metric-row"><span>Address</span><strong>{linkAddress(link)}</strong></div>
+              {link?.kind === "usb" && link.usb && <div className="metric-row"><span>USB device</span><strong>{link.usb.vendorId.toString(16).padStart(4, "0")}:{link.usb.productId.toString(16).padStart(4, "0")} {link.usb.product ?? ""}</strong></div>}
               <div className="metric-row"><span>Transport</span><strong>{link?.transport ?? "tcp"}</strong></div>
               <div className="metric-row"><span>Round trip</span><strong>{stats?.rttMs === null || !stats ? "—" : `${stats.rttMs.toFixed(1)} ms`}</strong></div>
               <div className="metric-row"><span>Screens read</span><strong>{stats?.frames ?? 0} · {stats?.fps.toFixed(1) ?? "0"}/s</strong></div>
@@ -54,7 +55,7 @@ export function InstrumentView() {
               <div className="metric-row"><span>Received</span><strong>{fmt(stats?.bytesIn ?? 0, "B", 3)}</strong></div>
               <div className="metric-row"><span>WORD byte order</span><strong>{link?.wordOrder} {link?.wordOrderLocked ? <span className="badge ok">measured</span> : <span className="badge warn">not yet measured</span>}</strong></div>
               <p className="body-text">
-                Waveforms are read as 16-bit words so all 12 bits survive. The guide does not state the byte order, so the app reads it from the data (the right order gives a smooth trace, the wrong one jumps by hundreds of codes) and locks it after three confident screens.
+                {link?.kind === "usb" ? "Over USB the same SCPI travels in USB-TMC bulk transfers (USB488). " : ""}Waveforms are read as 16-bit words so all 12 bits survive. The guide does not state the byte order, so the app reads it from the data (the right order gives a smooth trace, the wrong one jumps by hundreds of codes) and locks it after three confident screens.
               </p>
             </div>
           </div>

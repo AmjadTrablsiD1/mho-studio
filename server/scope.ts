@@ -13,7 +13,8 @@ import { codes, detectWordOrder, parsePreamble, toVolts, type ByteOrder, type Pr
 import { delay, measureAll, Stats } from "../core/src/dsp/measure.ts";
 import { MEASUREMENT_BY_ITEM, type Slot } from "../core/src/registry/measurements.ts";
 import { ScpiClient, ScpiError, type Traffic } from "./scpi.ts";
-import { transportStatus } from "./transport.ts";
+import { transportStatus, type Conn } from "./transport.ts";
+import { openUsb, type UsbInfo } from "./usbtmc.ts";
 import { loadSettings, saveSettings } from "./store.ts";
 import { startSim, type SimHandle } from "../sim/server.ts";
 
@@ -26,8 +27,11 @@ export class HttpError extends Error {
 }
 
 export type LinkState = "idle" | "connecting" | "connected" | "lost";
+export type LinkKind = "tcp" | "usb" | "sim";
 export type Link = {
   state: LinkState;
+  kind: LinkKind;
+  usb: UsbInfo | null;
   host: string;
   port: number;
   sim: boolean;
@@ -50,7 +54,7 @@ export type Latest = { volts: Float32Array; pre: Preamble; t: number };
 
 export class ScopeService {
   readonly scpi = new ScpiClient();
-  link: Link = { state: "idle", host: "", port: C.instrument.scpi_port, sim: false, idn: null, error: null, transport: null, rttMs: null, wordOrder: C.wire.word_order_default as ByteOrder, wordOrderLocked: false, modelWarning: null };
+  link: Link = { state: "idle", kind: "tcp", usb: null, host: "", port: C.instrument.scpi_port, sim: false, idn: null, error: null, transport: null, rttMs: null, wordOrder: C.wire.word_order_default as ByteOrder, wordOrderLocked: false, modelWarning: null };
   values = new Map<string, Value>();
   options: Record<string, boolean> = {};
   status = "—";
@@ -108,44 +112,61 @@ export class ScopeService {
 
   // -------------------------------------------------------------- connect
 
-  async connect(opts: { host?: string; port?: number; sim?: boolean }): Promise<Link> {
+  /** How the USB link is opened; tests put a virtual USB-TMC device here. */
+  usbOpener: (id?: string | null) => Promise<{ conn: Conn; info: UsbInfo }> = openUsb;
+
+  async connect(opts: { host?: string; port?: number; sim?: boolean; usb?: boolean; usbId?: string | null }): Promise<Link> {
     this.wantConnected = true;
     this.loopToken++;
     this.scpi.close("reopen");
+    const kind: LinkKind = opts.usb ? "usb" : opts.sim ? "sim" : "tcp";
     let host = (opts.host ?? "").trim();
     let port = Number(opts.port ?? C.instrument.scpi_port);
-    if (opts.sim) {
+    if (kind === "sim") {
       if (!this.sim) this.sim = await startSim(0);
       host = "127.0.0.1";
       port = this.sim.port;
-    } else if (!host) {
-      throw new HttpError(400, "enter the oscilloscope's IP address (Utility → I/O → LAN on the MHO984)");
+    } else if (kind === "usb") {
+      host = "USB";
+      port = 0;
+    } else {
+      if (!host) throw new HttpError(400, "enter the oscilloscope's IP address (Utility → I/O → LAN on the MHO984)");
+      if (!/^[\w.:-]+$/.test(host)) throw new HttpError(400, "host must be a hostname or an IP address");
+      if (!(port > 0 && port < 65536)) throw new HttpError(400, "port must be 1–65535");
     }
-    if (!/^[\w.:-]+$/.test(host)) throw new HttpError(400, "host must be a hostname or an IP address");
-    if (!(port > 0 && port < 65536)) throw new HttpError(400, "port must be 1–65535");
     this.values.clear();
     this.latest.clear();
-    this.setLink({ state: "connecting", host, port, sim: !!opts.sim, error: null, idn: null, modelWarning: null, wordOrderLocked: false });
+    this.setLink({ state: "connecting", kind, host, port, sim: kind === "sim", usb: null, error: null, idn: null, modelWarning: null, wordOrderLocked: false });
     try {
-      await this.scpi.open(host, port);
+      await this.openLink(kind, host, port, opts.usbId ?? null);
       await this.handshake();
     } catch (e) {
       this.scpi.close("closed");
       this.setLink({ state: "idle", error: this.explain(e as Error, host, port) });
       throw new HttpError(502, this.link.error!);
     }
-    if (!opts.sim) {
-      const s = loadSettings();
-      saveSettings({ ...s, host, port, lastWasSim: false, recent: [host, ...s.recent.filter((h) => h !== host)].slice(0, 8) });
-    } else {
-      saveSettings({ ...loadSettings(), lastWasSim: true });
-    }
+    const s = loadSettings();
+    if (kind === "tcp") saveSettings({ ...s, host, port, lastKind: "tcp", recent: [host, ...s.recent.filter((h) => h !== host)].slice(0, 8) });
+    else if (kind === "usb") saveSettings({ ...s, lastKind: "usb", usbId: this.link.usb?.id ?? null });
+    else saveSettings({ ...s, lastKind: "sim" });
     this.startLoop();
     return this.link;
   }
 
+  /** Open the byte stream for a link: a TCP socket, or the USB-TMC interface. */
+  private async openLink(kind: LinkKind, host: string, port: number, usbId: string | null): Promise<void> {
+    if (kind === "usb") {
+      const { conn, info } = await this.usbOpener(usbId);
+      this.scpi.attach(conn, "USB", 0);
+      this.link = { ...this.link, usb: info };
+    } else {
+      await this.scpi.open(host, port);
+    }
+  }
+
   private explain(e: Error, host: string, port: number): string {
     const code = (e as NodeJS.ErrnoException).code ?? (e as ScpiError).code ?? "";
+    if (host === "USB") return e.message;
     if (code === "ECONNREFUSED") return `${host} refused port ${port}. Is it the oscilloscope, and is LAN enabled (Utility → I/O)?`;
     if (code === "ETIMEDOUT" || /within/.test(e.message)) return `No answer from ${host}:${port}. Check the cable, the IP address and that the PC is on the same network.`;
     if (code === "EHOSTUNREACH" || code === "ENETUNREACH") return `${host} is unreachable from this computer (${code}). On macOS, check System Settings → Privacy & Security → Local Network.`;
@@ -155,7 +176,7 @@ export class ScopeService {
   private async handshake(): Promise<void> {
     const idn = parseIdn(await this.scpi.query("*IDN?"));
     const warn = /MHO9/i.test(idn.model) ? null : `This app is built for the MHO984; "${idn.model || idn.raw}" answered. Commands follow the MHO900 guide and may differ on it.`;
-    this.setLink({ state: "connected", idn, transport: transportStatus().active, modelWarning: warn, error: null });
+    this.setLink({ state: "connected", idn, transport: this.link.kind === "usb" ? "usb-tmc" : transportStatus().active, modelWarning: warn, error: null });
     await this.scpi.write("*CLS");
     this.options = {};
     for (const o of C.instrument.options) {
@@ -191,7 +212,7 @@ export class ScopeService {
       await sleep(C.instrument.reconnect_backoff_ms * Math.min(attempt, 5));
       if (!this.wantConnected || this.link.state !== "lost") return;
       try {
-        await this.scpi.open(this.link.host, this.link.port);
+        await this.openLink(this.link.kind, this.link.host, this.link.port, this.link.usb?.id ?? null);
         await this.handshake();
         this.startLoop();
         return;

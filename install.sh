@@ -35,7 +35,9 @@ rsync -a --delete \
   --exclude '.git' --exclude 'node_modules' --exclude 'test-results' --exclude 'playwright-report' \
   --exclude 'ui/tests/screenshots' --exclude '.DS_Store' \
   "$SRC/" "$DEST/"
-# The server has no runtime dependencies: Node's own modules only.
+# 4a. The server's one dependency, optional: `usb` (USB-TMC; prebuilt native binary per platform).
+#     If it cannot be installed, the app still runs and says USB is unavailable.
+( cd "$DEST/server" && "$NPM" install --omit=dev --silent ) || echo "note: USB support could not be installed; LAN and the simulator still work"
 
 # 4. The .command — the shortcut that always works.
 CMD="$SHORTCUTS/$APP_NAME.command"
@@ -50,8 +52,14 @@ chmod +x "$CMD"
 cat > "$SRC/run-$APP_ID.bat" <<'WINEOF'
 @echo off
 REM UNTESTED: written on a Mac, never run on Windows. Needs Node 22.18+ on PATH.
-REM The oscilloscope must be reachable on the LAN (raw SCPI, TCP port 5555).
+REM The oscilloscope must be reachable on the LAN (raw SCPI, TCP port 5555), or on USB:
+REM for USB the scope's interface needs the WinUSB driver (Zadig) if NI-VISA/UltraSigma claimed it.
 cd /d "%~dp0"
+if not exist server\node_modules\usb (
+  pushd server
+  call npm install --omit=dev
+  popd
+)
 if not exist ui\dist\index.html (
   pushd ui
   call npm install
