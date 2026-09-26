@@ -73,6 +73,8 @@ export type Live = {
   presets: Preset[];
   settings: Settings | null;
   problem: string | null;
+  /** Control ids this instrument's firmware does not answer (learned, and remembered per firmware). */
+  unsupported: string[];
 };
 
 let state: Live = {
@@ -93,6 +95,7 @@ let state: Live = {
   presets: [],
   settings: null,
   problem: null,
+  unsupported: [],
 };
 
 const listeners = new Set<() => void>();
@@ -262,6 +265,7 @@ export async function connectStream(): Promise<void> {
   on<DeepProgress>("deep-progress", (deepProgress) => set({ deepProgress }));
   on<Preset[]>("presets", (presets) => set({ presets }));
   on<{ message: string }>("problem", (p) => set({ problem: p.message }));
+  on<string[]>("unsupported", (unsupported) => set({ unsupported }));
   on<Traffic>("traffic", (t) => set({ traffic: [...state.traffic.slice(-299), t] }));
   on<{ t: number; seq: number; status: string; traces: (Omit<Trace, "volts"> & { volts: string })[] }>("frame", (f) => {
     const frame: Frame = { ...f, traces: f.traces.map((t) => ({ ...t, volts: b64floats(t.volts) })) };

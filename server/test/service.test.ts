@@ -70,7 +70,14 @@ test("console sends raw SCPI and reports the error queue", async () => {
   const r = await scope.console(":TIMebase:SCALe?");
   assert.equal(Number(r.reply), 1e-4);
   const bad = await scope.console(":NOT:A:COMMAND 1");
-  assert.equal(bad.errors[0].code, -113);
+  assert.equal(bad.errors[0].code, -100);
+});
+
+test("over LAN too, an unanswered query costs only itself: the next query resynchronises", async () => {
+  const r = await scope.console(":NOT:A:REAL:QUERY?");
+  assert.equal(r.reply, null);
+  assert.equal(scope.link.state, "connected");
+  assert.equal(await scope.readKey("timebase.scale"), 1e-4);
 });
 
 test("screenshot is a PNG", async () => {

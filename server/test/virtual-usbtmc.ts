@@ -2,17 +2,26 @@
 // pipes, speaking real USB-TMC framing. Lets the whole USB path — tags,
 // headers, padding, replies split over several transfers, REQUEST sizes —
 // run in tests without a device on the cable.
+//
+// It also copies two behaviours measured on the real MHO984 over USB
+// (2026-09-26) that caused a crash and a dead link in the app:
+//  • a REQUEST for a reply that does not exist is never answered, and after
+//    the host gives up the device answers nothing more until a USB-TMC clear;
+//  • the USB library throws synchronously if the device is released or closed
+//    while a transfer is pending.
 
 import { SimScope } from "../../sim/instrument.ts";
 import { makeBlock } from "../../core/src/scpi/block.ts";
 import { TMC, msgIn, parseOut } from "../../core/src/scpi/usbtmc.ts";
-import type { BulkPipe } from "../usbtmc.ts";
+import { pipeFor, type BulkPipe, type UsbDevCore } from "../usbtmc.ts";
 
 export type VirtualOptions = {
   /** Largest bulk-IN transfer the device returns; longer messages continue in further transfers. */
   maxTransfer?: number;
   /** Behave like instruments that never set EOM on the last chunk. */
   noEom?: boolean;
+  /** A reply left over from an earlier session, waiting on bulk-IN with an old tag (seen on the MHO984). */
+  leftover?: string;
   packet?: number;
 };
 
@@ -26,14 +35,19 @@ export class VirtualUsbtmc implements BulkPipe {
   /** Transfers queued on bulk-IN; a read never spans two of them. */
   private inQueue: Uint8Array[] = [];
   closed = false;
+  /** Gave up on a missing reply: silent until clear(). */
+  stuck = false;
+  clears = 0;
+  private busy = false;
   requests = 0;
   transfersIn = 0;
   badTags = 0;
 
   constructor(scope = new SimScope(), opts: VirtualOptions = {}) {
     this.scope = scope;
-    this.opts = { maxTransfer: opts.maxTransfer ?? 64 * 1024, noEom: opts.noEom ?? false, packet: opts.packet ?? 512 };
+    this.opts = { maxTransfer: opts.maxTransfer ?? 64 * 1024, noEom: opts.noEom ?? false, packet: opts.packet ?? 512, leftover: opts.leftover ?? "" };
     this.maxPacket = this.opts.packet;
+    if (this.opts.leftover) this.inQueue.push(msgIn(152, new TextEncoder().encode(this.opts.leftover), true));
   }
 
   async out(data: Uint8Array): Promise<void> {
@@ -68,6 +82,7 @@ export class VirtualUsbtmc implements BulkPipe {
     }
     if (m.msgId === TMC.requestDevDepMsgIn) {
       this.requests++;
+      if (this.stuck || this.output.length === 0) return; // nothing to say: the IN read will time out
       const n = Math.min(m.size, this.output.length);
       const payload = this.output.slice(0, n);
       this.output = this.output.slice(n);
@@ -89,10 +104,13 @@ export class VirtualUsbtmc implements BulkPipe {
 
   async in(length: number, timeoutMs: number): Promise<Uint8Array> {
     if (this.closed) throw new Error("device closed");
-    const next = this.inQueue.shift();
+    const next = this.stuck ? undefined : this.inQueue.shift();
     if (!next) {
-      await new Promise((r) => setTimeout(r, Math.min(timeoutMs, 50)));
-      throw new Error("USB transfer timed out (the virtual device had nothing to send)");
+      this.busy = true;
+      await new Promise((r) => setTimeout(r, timeoutMs));
+      this.busy = false;
+      this.stuck = true;
+      throw new Error("transferIn error: Cancelled");
     }
     if (length % this.maxPacket !== 0) throw new Error(`bulk-IN length ${length} is not whole packets of ${this.maxPacket}`);
     this.transfersIn++;
@@ -103,7 +121,54 @@ export class VirtualUsbtmc implements BulkPipe {
     return next;
   }
 
-  async close(): Promise<void> {
+  async clear(): Promise<void> {
+    this.clears++;
+    this.stuck = false;
+    this.output = new Uint8Array(0);
+    this.inQueue = [];
+    this.incoming = [];
+  }
+
+  close(): Promise<void> {
     this.closed = true;
+    return Promise.resolve();
+  }
+
+  /**
+   * This device as the USB library presents it, wrapped by the app's own
+   * pipeFor(): so tests go through the real wrapper, and the library's quirks
+   * (a synchronous throw from release/close while a transfer is pending) hit it.
+   */
+  asLibraryDevice(): UsbDevCore {
+    const borrow = () => {
+      if (this.busy) throw Object.assign(new Error("The same native value cannot be borrowed mutably while another borrow is active"), { code: "InvalidArg" });
+    };
+    return {
+      nativeTransferOut: async (_ep: number, _t: number, data: Uint8Array) => (await this.out(data), data.length),
+      nativeTransferIn: (_ep: number, t: number, len: number) => this.in(len, t),
+      nativeControlTransferIn: async (setup: { request: number }) => {
+        if (setup.request === TMC.initiateClear) {
+          await this.clear();
+          return Uint8Array.of(TMC.statusSuccess);
+        }
+        if (setup.request === TMC.checkClearStatus) return Uint8Array.of(TMC.statusSuccess, 0);
+        return null;
+      },
+      clearHalt: async () => undefined,
+      releaseInterface: ((_n: number) => {
+        borrow();
+        return Promise.resolve();
+      }) as UsbDevCore["releaseInterface"],
+      close: (() => {
+        borrow();
+        this.closed = true;
+        return Promise.resolve();
+      }) as UsbDevCore["close"],
+    };
+  }
+
+  /** The pipe the app would build for this device. */
+  pipe(): BulkPipe {
+    return pipeFor(this.asLibraryDevice(), 0, 1, 1, this.maxPacket);
   }
 }

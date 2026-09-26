@@ -15,7 +15,8 @@ import { MEASUREMENT_BY_ITEM, type Slot } from "../core/src/registry/measurement
 import { ScpiClient, ScpiError, type Traffic } from "./scpi.ts";
 import { transportStatus, type Conn } from "./transport.ts";
 import { openUsb, type UsbInfo } from "./usbtmc.ts";
-import { loadSettings, saveSettings } from "./store.ts";
+import { loadSettings, loadUnsupported, saveSettings, saveUnsupported } from "./store.ts";
+import { log } from "./log.ts";
 import { startSim, type SimHandle } from "../sim/server.ts";
 
 export class HttpError extends Error {
@@ -88,6 +89,7 @@ export class ScopeService {
 
   snapshot() {
     return {
+      unsupported: [...this.unsupported],
       link: this.link,
       values: Object.fromEntries(this.values),
       options: this.options,
@@ -174,9 +176,18 @@ export class ScopeService {
   }
 
   private async handshake(): Promise<void> {
-    const idn = parseIdn(await this.scpi.query("*IDN?"));
+    // A reply left over from a previous session can answer the first question (seen over USB);
+    // the stream clears it and reports no reply, so ask once more.
+    const idn = parseIdn(await this.scpi.query("*IDN?").catch((e) => {
+      if (e instanceof ScpiError && e.code === "ENOREPLY") return this.scpi.query("*IDN?");
+      throw e;
+    }));
     const warn = /MHO9/i.test(idn.model) ? null : `This app is built for the MHO984; "${idn.model || idn.raw}" answered. Commands follow the MHO900 guide and may differ on it.`;
     this.setLink({ state: "connected", idn, transport: this.link.kind === "usb" ? "usb-tmc" : transportStatus().active, modelWarning: warn, error: null });
+    this.scpi.syncToken = idn.raw;
+    this.unsupported = new Set(loadUnsupported(this.firmwareKey()));
+    this.broadcast("unsupported", [...this.unsupported]);
+    log(`connected: ${idn.raw} over ${this.link.kind}${this.unsupported.size ? `; ${this.unsupported.size} queries known unanswered on this firmware` : ""}`);
     await this.scpi.write("*CLS");
     this.options = {};
     for (const o of C.instrument.options) {
@@ -206,6 +217,7 @@ export class ScopeService {
 
   private async lost(why: string): Promise<void> {
     if (!this.wantConnected) return;
+    log(`link lost: ${why}`);
     this.loopToken++;
     this.setLink({ state: "lost", error: `Connection lost (${why}). Reconnecting…` });
     for (let attempt = 1; this.wantConnected && this.link.state === "lost"; attempt++) {
@@ -274,15 +286,74 @@ export class ScopeService {
     }
   }
 
-  async readKey(k: string): Promise<Value> {
+  private queryOf(k: string): { c: Control; q: string } {
     const { id, n } = parseKey(k);
     const c = BY_ID.get(id);
     if (!c) throw new HttpError(404, `no control ${id}`);
     if (!c.query) throw new HttpError(400, `${c.header} cannot be read`);
-    const reply = await this.scpi.query(`${render(c.header, c.suffix ? { [c.suffix.name]: n ?? 1 } : {})}?`);
-    const v = this.parse(c, reply);
-    this.values.set(k, v);
-    return v;
+    return { c, q: `${render(c.header, c.suffix ? { [c.suffix.name]: n ?? 1 } : {})}?` };
+  }
+
+  /**
+   * Read one value. A query this firmware does not answer is remembered (per
+   * model and firmware, on disk) and not asked again: each costs a timeout
+   * plus a clear, and a settings panel may hold dozens.
+   */
+  async readKey(k: string): Promise<Value> {
+    const { c, q } = this.queryOf(k);
+    if (this.unsupported.has(c.id)) {
+      this.values.set(k, null);
+      return null;
+    }
+    try {
+      const v = this.parse(c, await this.scpi.query(q, C.instrument.value_timeout_ms));
+      this.values.set(k, v);
+      return v;
+    } catch (e) {
+      if (e instanceof ScpiError && e.code === "ENOREPLY") this.markUnsupported(c.id, q);
+      throw e;
+    }
+  }
+
+  /** Several values in one compound query (":A?;:B?"): one USB/TCP round trip instead of one each. */
+  private async readBatch(keys: string[]): Promise<void> {
+    const live = keys.filter((k) => !this.unsupported.has(parseKey(k).id));
+    for (let i = 0; i < live.length; i += C.instrument.batch_queries) {
+      const group = live.slice(i, i + C.instrument.batch_queries);
+      const qs = group.map((k) => this.queryOf(k));
+      let parts: string[] | null = null;
+      try {
+        parts = (await this.scpi.query(qs.map((x) => x.q).join(";"), C.instrument.value_timeout_ms * 2)).split(";");
+      } catch (e) {
+        if (!(e instanceof ScpiError) || e.code !== "ENOREPLY") throw e;
+      }
+      if (parts && parts.length === group.length) {
+        group.forEach((k, j) => this.values.set(k, this.parse(qs[j].c, parts![j])));
+      } else {
+        // One of them is not answered (or a value held a ';'): ask one by one, which also finds the culprit.
+        for (const k of group) await this.readKey(k).catch((e) => this.tolerate(e));
+      }
+    }
+  }
+
+  /** ENOREPLY is a per-query failure; anything else (a lost link) propagates. */
+  private tolerate(e: unknown): void {
+    if (e instanceof ScpiError && e.code === "ENOREPLY") return;
+    throw e;
+  }
+
+  unsupported = new Set<string>();
+
+  private markUnsupported(id: string, q: string): void {
+    if (this.unsupported.has(id)) return;
+    this.unsupported.add(id);
+    log(`no reply to ${q} — marked unsupported on ${this.link.idn?.model} fw ${this.link.idn?.firmware}`);
+    saveUnsupported(this.firmwareKey(), [...this.unsupported]);
+    this.broadcast("unsupported", [...this.unsupported]);
+  }
+
+  private firmwareKey(): string {
+    return `${this.link.idn?.model ?? "?"} ${this.link.idn?.firmware ?? "?"}`;
   }
 
   async readKeys(keys: string[]): Promise<Record<string, Value>> {
@@ -292,6 +363,10 @@ export class ScopeService {
         await this.readKey(k);
         read.push(k);
       } catch (e) {
+        if (e instanceof ScpiError && e.code === "ENOREPLY") {
+          read.push(k);
+          continue;
+        }
         if (e instanceof ScpiError) throw e;
       }
     }
@@ -351,7 +426,12 @@ export class ScopeService {
     const result = await this.scpi.exclusive(async () => {
       await this.scpi.write(`${render(c.header, sfx)} ${encode(v, c.kind as "number" | "enum" | "bool" | "string")}`);
       await sleep(C.loops.after_write_settle_ms);
-      const readback = c.query ? await this.readKey(k) : v;
+      const readback = c.query
+        ? await this.readKey(k).catch((e) => {
+            this.tolerate(e); // this firmware does not answer the query form: keep what was sent
+            return v;
+          })
+        : v;
       const also = (c.after ?? []).flatMap((a) => {
         const ac = BY_ID.get(a);
         if (!ac?.query) return [];
@@ -444,6 +524,7 @@ export class ScopeService {
         }
       } catch (e) {
         if (e instanceof ScpiError && (e.code === "ETIMEDOUT" || e.code === "ECONNRESET" || e.code === "ENOTCONN")) return; // lost() takes over
+        if (e instanceof ScpiError && e.code === "ENOREPLY") log(`live loop: ${e.message}`);
         this.broadcast("problem", { message: (e as Error).message });
         await sleep(C.loops.idle_backoff_ms);
       }
@@ -514,12 +595,10 @@ export class ScopeService {
   /** Values a person may change at the instrument itself. */
   private async watch(): Promise<void> {
     const keys = CONTROLS.filter((c) => c.watch && c.query && this.has(c.needs)).flatMap(keysOf);
+    const before = new Map(keys.map((k) => [k, this.values.get(k) ?? null]));
+    await this.readBatch(keys);
     const changed: Record<string, Value> = {};
-    for (const k of keys) {
-      const before = this.values.get(k);
-      const v = await this.readKey(k);
-      if (!same(before ?? null, v)) changed[k] = v;
-    }
+    for (const k of keys) if (!same(before.get(k) ?? null, this.values.get(k) ?? null)) changed[k] = this.values.get(k) ?? null;
     if (Object.keys(changed).length) {
       if ("trigger.mode" in changed) for (const t of this.triggerTypeKeys()) changed[t] = await this.readKey(t);
       this.broadcast("values", this.current(Object.keys(changed)));
@@ -648,7 +727,16 @@ export class ScopeService {
     let reply: string | null = null;
     let block: { bytes: number; text: string | null; hex: string } | null = null;
     if (c.includes("?")) {
-      const r = await this.scpi.queryAny(c);
+      // Long only for commands that return data blocks; a mistyped query should come back quickly.
+      const slow = /DATA\?|SETup\?|IMAGe|EEXPort/i.test(c);
+      const r = await this.scpi.queryAny(c, slow ? C.instrument.block_timeout_ms : C.instrument.console_timeout_ms).catch((e) => {
+        if (e instanceof ScpiError && e.code === "ENOREPLY") return null;
+        throw e;
+      });
+      if (r === null) {
+        const errors = await this.drainErrors();
+        return { reply: null, block: null, errors: [{ code: 0, message: "no reply within the timeout — the instrument does not answer this query" }, ...errors] };
+      }
       if (r.kind === "line") reply = r.text;
       else {
         const printable = r.data.length > 0 && r.data.filter((b) => b === 9 || b === 10 || b === 13 || (b >= 32 && b < 127)).length / r.data.length > 0.95;

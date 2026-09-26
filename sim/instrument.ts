@@ -43,7 +43,11 @@ export class SimScope {
   /** Every command received, for tests that want to know what the app sent. */
   log: string[] = [];
 
-  constructor() {
+  /** Queries this simulated firmware leaves unanswered (to model a firmware that lacks part of the guide). */
+  unimplemented: RegExp[];
+
+  constructor(opts: { unimplemented?: RegExp[] } = {}) {
+    this.unimplemented = opts.unimplemented ?? [];
     this.reset();
   }
 
@@ -464,10 +468,10 @@ export class SimScope {
     for (const u of splitMessage(message)) {
       try {
         const r = this.unit(u.header, u.args, u.query);
-        if (u.query) out.push(r ?? "");
+        // A query the instrument cannot answer gets no reply at all, as on the real MHO984.
+        if (u.query && r !== null && r !== undefined) out.push(r);
       } catch (e) {
         this.err(-200, (e as Error).message);
-        if (u.query) out.push("");
       }
     }
     return out;
@@ -618,7 +622,16 @@ export class SimScope {
     }
   }
 
+  /**
+   * `null` for a query means no reply. The real MHO984 (fw 00.01.00, measured
+   * over USB 2026-09-26) answers an unknown query with silence and queues
+   * -100 "Command err"; the simulator does the same.
+   */
   private unit(header: string, args: string, q: boolean): Out | null {
+    if (q && this.unimplemented.some((re) => re.test(header))) {
+      this.err(-100, "Command err");
+      return null;
+    }
     const s = this.special(header, args, q);
     if (s !== undefined) return s;
     for (const { c, m } of this.generic) {
@@ -627,13 +640,13 @@ export class SimScope {
       const n = c.suffix ? sfx[c.suffix.name] ?? 1 : null;
       if (c.suffix && n !== null && !c.suffix.values.includes(n)) {
         this.err(-114, "Header suffix out of range");
-        return q ? "" : null;
+        return null;
       }
       const k = key(c.id, n);
       if (q) {
         if (!c.query) {
-          this.err(-113, "Undefined header; this command has no query form");
-          return "";
+          this.err(-100, "Command err");
+          return null;
         }
         return this.reply(c, this.values.get(k));
       }
@@ -645,8 +658,8 @@ export class SimScope {
       this.write(c, n, k, args);
       return null;
     }
-    this.err(-113, `Undefined header; command cannot be found (${header})`);
-    return q ? "" : null;
+    this.err(-100, "Command err");
+    return null;
   }
 
   private reply(c: Control, v: V | undefined): string {

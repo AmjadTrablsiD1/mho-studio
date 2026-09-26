@@ -20,6 +20,12 @@ import { discover } from "./discover.ts";
 import { listUsb } from "./usbtmc.ts";
 import { deletePreset, expand, listPresets, loadSettings, readPreset, savePreset } from "./store.ts";
 import { resetTransport } from "./transport.ts";
+import { log } from "./log.ts";
+
+// A stray error in a callback must not take the instrument link down with the process.
+// It is logged; the request that caused it (if any) has already answered with an error.
+process.on("unhandledRejection", (e) => log(`unhandled rejection: ${(e as Error)?.stack ?? e}`));
+process.on("uncaughtException", (e) => log(`uncaught exception: ${e.stack ?? e}`));
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
@@ -409,6 +415,7 @@ server.listen(Number(explicitPort ?? C.server.port), C.server.host, async () => 
     writeFileSync(PORT_FILE, String(port));
   }
   console.log(`${C.app.name} ${C.app.version} — ${url}`);
+  log(`started ${C.app.version} on ${url} (pid ${process.pid})`);
   console.log("Press Control-C to stop.");
   if (!flag("no-open")) openBrowser(url);
   // Reconnect to where we were last time, without blocking the window.

@@ -78,10 +78,18 @@ export function Ctl({ id, n = null, label, hideLabel }: { id: string; n?: number
   const dk = c ? depKey(c, n) : null;
   const dv = useLive((s) => (dk ? s.values[dk] : undefined));
   const connected = useLive((s) => s.link?.state === "connected");
+  const unanswered = useLive((s) => s.unsupported.includes(id));
   const [write, note, busy] = useWrite(k);
   if (!c) return <div className="ctl"><span className="c-label">unknown {id}</span></div>;
   if (c.when && !relevant(c, n, () => dv)) return null;
   const name = label ?? c.label;
+  if (unanswered && c.kind !== "action")
+    return (
+      <div className="ctl" data-ctl={k}>
+        {!hideLabel && <span className="c-label" title={`${c.header}  (guide §${c.section})`}><span>{name}</span></span>}
+        <div className="c-ro muted" title={`${c.header}? got no reply from this instrument's firmware; the app no longer asks it`}>not answered by this firmware</div>
+      </div>
+    );
   return (
     <div className="ctl" data-ctl={k}>
       {!hideLabel && (

@@ -130,14 +130,19 @@ cd ui && npx playwright test # 13 UI flows × 2 themes (24 runs), axe, fold prob
 - **The instrument's own Bode option** cannot return its curve over SCPI; the
   app's own sweep replaces it (needs the AFG50/AFG100 option, as the built-in
   one does).
-- **USB is untested on hardware.** The USB-TMC path is tested end to end against
-  a virtual USB-TMC device wrapping the simulator (framing, multi-transfer replies,
-  a missing end-of-message flag, unplugging), but not yet against the real scope,
-  its USB product ID, or Windows/Linux drivers.
+- **USB has run on a real MHO984 on macOS** (1ab1:0452, fw 00.01.00); not yet on
+  Windows or Linux drivers. About 4 screens/s with one channel over USB: the
+  instrument takes 25–35 ms per query.
+- **Some commands in the programming guide get no reply from firmware 00.01.00.**
+  The app learns which (each costs one ~1.5 s timeout the first time), remembers
+  them per firmware in `~/.config/mho-studio/unsupported.json`, shows them as
+  "not answered by this firmware" and does not ask again.
 - The window needs at least 1200 × 680 px.
 - The `.bat` launcher is untested.
 - One UI test run of four showed an unexplained failure in the first test that
   did not recur in 13 further runs.
+- The server logs connections, lost links and unanswered queries to
+  `~/.local/state/mho-studio/server.log` — look there first if something drops.
 
 ## Layout
 

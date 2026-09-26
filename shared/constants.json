@@ -22,7 +22,8 @@
     "port_file": "~/.local/state/mho-studio/port",
     "settings_file": "~/.config/mho-studio/settings.json",
     "presets_dir": "~/.config/mho-studio/presets",
-    "log_file": "~/.local/state/mho-studio/scpi.log"
+    "log_file": "~/.local/state/mho-studio/server.log",
+    "log_max_bytes": 2000000
   },
   "instrument": {
     "vendor": "RIGOL TECHNOLOGIES",
@@ -30,7 +31,11 @@
     "family": "MHO900",
     "scpi_port": 5555,
     "connect_timeout_ms": 2500,
-    "query_timeout_ms": 4000,
+    "query_timeout_ms": 3000,
+    "value_timeout_ms": 1500,
+    "console_timeout_ms": 5000,
+    "resync_ms": 5000,
+    "batch_queries": 8,
     "block_timeout_ms": 60000,
     "reconnect_backoff_ms": 1500,
     "analog_channels": 4,
@@ -65,7 +70,8 @@
     "_comment": "USB-TMC over the rear USB Device port (server/usbtmc.ts). request_bytes is how much of a reply is asked for per REQUEST_DEV_DEP_MSG_IN; replies longer than that come in several.",
     "request_bytes": 1048576,
     "write_timeout_ms": 5000,
-    "read_timeout_ms": 60000
+    "read_timeout_ms": 60000,
+    "backstop_ms": 5000
   },
   "wire": {
     "_comment": "How waveform bytes are laid out. WORD byte order is detected from the data and then locked (core/src/wave/decode.ts); prefer_word_format reads 12-bit data as 16-bit words so no resolution is lost.",
@@ -76,7 +82,7 @@
   "loops": {
     "live_period_ms": 40,
     "status_period_ms": 250,
-    "watch_period_ms": 1500,
+    "watch_period_ms": 3000,
     "measure_period_ms": 350,
     "counter_period_ms": 500,
     "after_write_settle_ms": 60,

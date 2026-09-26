@@ -23,6 +23,8 @@
 - USB-TMC link on the rear USB Device port (`server/usbtmc.ts`), with reconnect on replug and remembered for the next launch; tested over a virtual USB-TMC device.
 - Discovery also finds a scope on a direct cable (mDNS for LXI services + the ARP table), not only on ordinary /24 networks.
 
+- Fixed after the first session on the real MHO984 over USB (2026-09-26): an unanswered query no longer drops the link or crashes the server; leftover replies from an earlier session are cleared; unanswered queries are learned per firmware; the settings watch is batched into compound queries; a server log.
+
 ## Doing
 
 - Nothing in progress.
@@ -31,7 +33,8 @@
 
 1. **First session on the real MHO984.** Check, in this order: `*IDN?` and options; WORD byte order is detected and locked (Instrument view); traces overlay the scope's own screen (Screenshot) at several V/div and offsets; `:MEASure:ITEM?` agrees with the cross-check; deep capture of 25 Mpts (is 250 000 points per read accepted? adjust `instrument.raw_chunk_points`); Bode on a known RC. Record anything that differs from the guide in `sim/README.md` and make the simulator match.
 2. **Frame rate on hardware.** If the LAN round trip makes 4 channels slow, read `:WAVeform:PREamble?` only when settings change, or use BYTE for the live view.
-3. **USB on the real scope:** note its USB product ID and whether it sets EOM; check a 25 Mpt deep read over USB and the frame rate; on Windows, confirm the Zadig/WinUSB steps; on Linux, the udev rule.
+3. **USB on the real scope, continued:** probe every query once (finds all unanswered ones for fw 00.01.00 and any reply that does not match the guide's options); a 25 Mpt deep read over USB; Windows (Zadig/WinUSB) and Linux (udev).
+4. **Speed over USB:** read preamble and data in one compound query (`:WAV:PRE?;:WAV:DATA?` works on the scope), and skip the preamble when no setting changed.
 4. **Reference waveforms in the app**: freeze a trace as an overlay (the instrument's own REF1–10 are already in All settings).
 5. **Mask test and waveform record/playback panels** with their results (today: settings only, in All settings).
 6. **Jitter / eye analysis** from deep memory (time-interval error from edge crossings).

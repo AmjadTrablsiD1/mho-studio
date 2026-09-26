@@ -192,7 +192,7 @@ test("console: a query answers; an unknown command shows the instrument's error"
   await expect(page.getByTestId("console-log")).toContainText("1.000000E-04");
   await input.fill(":NOT:REAL 1");
   await input.press("Enter");
-  await expect(page.getByTestId("console-log")).toContainText("-113");
+  await expect(page.getByTestId("console-log")).toContainText("-100");
 });
 
 test("instrument and all settings: options, screenshot, search across the whole command set", async ({ page }, info) => {

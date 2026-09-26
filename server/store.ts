@@ -86,3 +86,30 @@ export function deletePreset(name: string): void {
     if (existsSync(f)) unlinkSync(f);
   }
 }
+
+// ------------------------------------------------------ firmware knowledge
+
+/** Queries a given model + firmware was seen not to answer, so they are not asked again. */
+const unsupportedFile = () => expand(`${C.paths.config_dir}/unsupported.json`);
+
+export function loadUnsupported(firmware: string): string[] {
+  try {
+    const all = JSON.parse(readFileSync(unsupportedFile(), "utf8")) as Record<string, string[]>;
+    return all[firmware] ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveUnsupported(firmware: string, ids: string[]): void {
+  let all: Record<string, string[]> = {};
+  try {
+    all = JSON.parse(readFileSync(unsupportedFile(), "utf8"));
+  } catch {
+    /* first one */
+  }
+  all[firmware] = [...new Set(ids)].sort();
+  const f = unsupportedFile();
+  mkdirSync(dirname(f), { recursive: true });
+  writeFileSync(f, JSON.stringify(all, null, 1));
+}

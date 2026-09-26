@@ -202,6 +202,8 @@ query with behaviour, `sim/bench.ts` for a signal; list it in `sim/README.md`.
 |---|---|---|
 | Raw SCPI over TCP 5555 from Node | No VISA/NI stack, identical on macOS and Windows, one socket | VISA via ffi |
 | USB-TMC implemented in TypeScript over `usb` v3 (nusb, prebuilt) | Framing is small and testable; no libusb or compiler; macOS needs no driver | VISA (NI-VISA install, poor macOS support); `usb` v2 (libusb) |
+| A missing reply is a per-query error (ENOREPLY), not a lost link | The MHO984 answers unknown/unimplemented queries with silence; over USB it then stays silent until a USB-TMC clear. The USB stream times out, clears and reports; TCP resynchronises on *IDN?. Unanswered queries are remembered per firmware | Closing and reconnecting (what 0.1 did: over USB the close crashed the server) |
+| Nothing touches the USB device while a transfer is pending | The `usb` library throws synchronously from release/close during a transfer; every call is queued and guarded | Relying on promise rejections |
 | mDNS + ARP in discovery | A direct cable with 169.254.x.x addresses is a /16 — unscannable; LXI instruments answer mDNS | Scanning /16 |
 | All TypeScript (Node server + React) | His standing rule: no Python in the GUI; one language end to end | Python core |
 | Browser UI served by a local Node server | Same stack as his other studios; no 150 MB Electron | Electron |
