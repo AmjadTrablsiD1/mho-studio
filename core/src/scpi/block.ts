@@ -20,6 +20,13 @@ export class ReplyReader {
   private need = 0;
   /** A block's trailing newline had not arrived when the block was handed out. */
   private owesTerminator = false;
+  /** Replies a message-framed link (VICP) delivered whole; they come out first. */
+  private ready: Reply[] = [];
+
+  /** A reply whose boundaries the link already knows. */
+  pushReply(r: Reply): void {
+    this.ready.push(r);
+  }
 
   push(chunk: Uint8Array): void {
     if (!chunk.length) return;
@@ -74,6 +81,7 @@ export class ReplyReader {
 
   /** The next complete reply, or null if more bytes are needed. */
   next(): Reply | null {
+    if (this.ready.length) return this.ready.shift()!;
     if (this.owesTerminator && this.length) this.dropTerminator();
     if (!this.length) return null;
     if (this.byte(0) === HASH) {
@@ -126,6 +134,7 @@ export class ReplyReader {
   }
 
   clear(): void {
+    this.ready = [];
     this.chunks = [];
     this.length = 0;
     this.need = 0;

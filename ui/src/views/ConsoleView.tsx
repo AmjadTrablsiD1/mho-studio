@@ -1,17 +1,19 @@
 // SCPI console: any command, with completion from the programming guide's
-// full command list, history, the error queue after every command, and an
+// full command list (the X-Stream remote control set on a LeCroy, where a VBS
+// line reaches everything else), history, the error queue after every command, and an
 // optional view of all traffic (including the app's own polling).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { C } from "../../../core/src/constants.ts";
 import manual from "../../../core/src/registry/manual.json";
+import { LECROY_CONSOLE } from "../../../core/src/registry/lecroy.ts";
 import { attempt, post, useLive } from "../api.ts";
 
 type Entry = { t: number; kind: "out" | "in" | "err" | "note"; text: string };
 type Reply = { reply: string | null; block: { bytes: number; text: string | null; hex: string } | null; errors: { code: number; message: string }[] };
 
 const HKEY = `${C.ui.storage_prefix}.console`;
-const COMMANDS = (manual as { commands: { header: string; set: boolean; query: boolean; section: string; params: { name: string; type: string; options?: string[]; range?: string }[] }[] }).commands;
+const RIGOL_COMMANDS = (manual as { commands: { header: string; set: boolean; query: boolean; section: string; params: { name: string; type: string; options?: string[]; range?: string }[] }[] }).commands;
 
 function loadHistory(): string[] {
   try {
@@ -24,7 +26,9 @@ function loadHistory(): string[] {
 export function ConsoleView() {
   const connected = useLive((s) => s.link?.state === "connected");
   const traffic = useLive((s) => s.traffic);
-  const [log, setLog] = useState<Entry[]>([{ t: Date.now(), kind: "note", text: "Type a command. A '?' makes it a query. Tab completes from the MHO900 guide's command list; ↑/↓ walk the history." }]);
+  const lecroy = useLive((s) => s.link?.family === "lecroy");
+  const COMMANDS = lecroy ? LECROY_CONSOLE : RIGOL_COMMANDS;
+  const [log, setLog] = useState<Entry[]>([{ t: Date.now(), kind: "note", text: "Type a command. A '?' makes it a query. Tab completes from the instrument's command list (the MHO900 guide on a RIGOL; on a LeCroy the common remote-control set, and VBS? 'return=app.…' reads any automation property); ↑/↓ walk the history." }]);
   const [cmd, setCmd] = useState("");
   const [hist, setHist] = useState<string[]>(loadHistory);
   const [hi, setHi] = useState(-1);
@@ -36,7 +40,7 @@ export function ConsoleView() {
     const q = cmd.trim().split(/\s/)[0].toLowerCase();
     if (q.length < 2 || cmd.includes(" ")) return [];
     return COMMANDS.filter((c) => c.header.toLowerCase().replace(/[<>[\]]/g, "").includes(q.replace(/^:/, "")) || c.header.toLowerCase().includes(q)).slice(0, 14);
-  }, [cmd]);
+  }, [cmd, COMMANDS]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
@@ -112,7 +116,7 @@ export function ConsoleView() {
               style={{ height: 32 }}
               aria-label="SCPI command"
               data-test="console-input"
-              placeholder=":TIMebase:MAIN:SCALe?"
+              placeholder={lecroy ? "C1:VDIV?   or   VBS? 'return=app.Acquisition.C1.VerScale'" : ":TIMebase:MAIN:SCALe?"}
               value={cmd}
               disabled={!connected}
               onChange={(e) => (setCmd(e.target.value), setSel(0))}

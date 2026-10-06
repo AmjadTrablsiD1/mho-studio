@@ -1,5 +1,6 @@
 // A raw-SCPI client over one byte stream: the MHO984's TCP port 5555, or its
-// USB-TMC interface wrapped as a stream (usbtmc.ts).
+// USB-TMC interface wrapped as a stream (usbtmc.ts), or a LeCroy's VICP link
+// (vicp.ts), which hands over whole replies instead of bytes.
 //
 // Commands are strictly sequential: one message out, and for a query one
 // reply in, before the next goes. `exclusive()` holds the line for a whole
@@ -17,6 +18,8 @@ import { C } from "../core/src/constants.ts";
 import { ReplyReader, type Reply } from "../core/src/scpi/block.ts";
 import { connectTo, type Conn } from "./transport.ts";
 import { NO_REPLY } from "./usbtmc.ts";
+import { VicpStream } from "./vicp.ts";
+import type { Protocol } from "../core/src/registry/families.ts";
 
 export type Traffic = { t: number; dir: "out" | "in"; text: string; bytes?: number };
 
@@ -53,11 +56,11 @@ export class ScpiClient {
     return this.conn !== null;
   }
 
-  async open(host: string, port: number): Promise<void> {
+  async open(host: string, port: number, protocol: Protocol = "raw"): Promise<void> {
     this.close("reopen");
-    const conn = await connectTo(host, port, C.instrument.connect_timeout_ms);
-    conn.setNoDelay?.(true);
-    this.attach(conn, host, port);
+    const tcp = await connectTo(host, port, C.instrument.connect_timeout_ms);
+    tcp.setNoDelay?.(true);
+    this.attach(protocol === "vicp" ? new VicpStream(tcp) : tcp, host, port);
   }
 
   /** Use an already-open byte stream (the USB-TMC link, or a test's virtual device). */
@@ -69,6 +72,12 @@ export class ScpiClient {
     this.reader.clear();
     this.stale = false;
     conn.on(NO_REPLY, (msg: string) => this.noReply(msg));
+    conn.on("reply", (r: Reply) => {
+      this.bytesIn += r.kind === "line" ? r.text.length : r.data.length;
+      this.reader.pushReply(r);
+      this.deliver();
+    });
+    conn.on("progress", (have: number, need: number) => this.onProgress?.(have, need));
     conn.on("data", (d: Buffer) => {
       this.bytesIn += d.length;
       this.reader.push(new Uint8Array(d.buffer, d.byteOffset, d.length));
@@ -94,6 +103,7 @@ export class ScpiClient {
     this.reader.clear();
     if (c) {
       c.removeAllListeners("data");
+      c.removeAllListeners("reply");
       c.destroy();
       if (why !== "reopen" && why !== "closed") this.onClose?.(why);
     }

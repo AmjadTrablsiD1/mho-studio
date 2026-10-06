@@ -1,6 +1,7 @@
 // Rule 1: themes are data (shared/themes.json) applied as CSS variables.
 import themes from "../../shared/themes.json";
 import { C } from "../../core/src/constants.ts";
+import { getLive } from "./api.ts";
 
 export type ThemeName = "midnight" | "daylight";
 type Palette = Record<string, string>;
@@ -64,9 +65,13 @@ export function sourceVar(src: string): string {
   if (m) return `var(--math${m[1]})`;
   return "var(--digital)";
 }
+/** "CHANnel1" (or a LeCroy "C1") → "CH1", with the channel's name if it has one: "CH1 · VIN". */
 export function sourceLabel(src: string): string {
-  const ch = /^CHAN(?:nel)?(\d)$/i.exec(src);
-  if (ch) return `CH${ch[1]}`;
+  const ch = /^(?:CHAN(?:nel)?|C)(\d)$/i.exec(src);
+  if (ch) {
+    const name = String(getLive().values[`channel.label.content@${ch[1]}`] ?? "").trim();
+    return name ? `CH${ch[1]} · ${name}` : `CH${ch[1]}`;
+  }
   const m = /^MATH(\d)$/i.exec(src);
   if (m) return `M${m[1]}`;
   return src;

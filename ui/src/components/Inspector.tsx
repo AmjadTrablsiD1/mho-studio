@@ -5,21 +5,24 @@ import { useEffect, useState } from "react";
 import { C } from "../../../core/src/constants.ts";
 import { key } from "../../../core/src/registry/controls.ts";
 import { fmt } from "../../../core/src/format.ts";
-import { MEASUREMENTS, ANALOG_SOURCES, MATH_SOURCES } from "../../../core/src/registry/measurements.ts";
+
 import { action, attempt, post, readGroup, useLive } from "../api.ts";
 import { setUi, useUi, type Section } from "../uistate.ts";
 import { Ctl, GroupPanel } from "./Controls.tsx";
 import { sourceLabel } from "../theme.ts";
+import { useReg } from "../registry.ts";
+import type { Features } from "../../../core/src/registry/families.ts";
+import { LECROY_TRIGGER_SUB } from "../../../core/src/registry/lecroy.ts";
 
-const SECTIONS: { id: Section; label: string }[] = [
+const SECTIONS: { id: Section; label: string; needs?: keyof Features }[] = [
   { id: "vertical", label: "Vertical" },
   { id: "horizontal", label: "Horizontal" },
   { id: "trigger", label: "Trigger" },
   { id: "acquire", label: "Acquire" },
   { id: "measure", label: "Measure" },
-  { id: "math", label: "Math" },
-  { id: "generator", label: "Generator" },
-  { id: "counter", label: "Counter" },
+  { id: "math", label: "Math", needs: "math" },
+  { id: "generator", label: "Generator", needs: "generator" },
+  { id: "counter", label: "Counter", needs: "counter" },
 ];
 
 /** :TRIGger:MODE option → the registry sub-group that holds its fields. */
@@ -30,11 +33,14 @@ export const TRIGGER_SUB: Record<string, string> = {
 };
 
 export function Inspector() {
-  const section = useUi((u) => u.section);
+  const r = useReg();
+  const want = useUi((u) => u.section);
+  const offered = SECTIONS.filter((s) => !s.needs || r.features[s.needs]);
+  const section = offered.some((s) => s.id === want) ? want : "vertical";
   return (
     <aside className="inspector" aria-label="Inspector">
       <div className="inspector-chips" role="tablist">
-        {SECTIONS.map((s) => (
+        {offered.map((s) => (
           <button key={s.id} role="tab" aria-selected={section === s.id} className={`chip${section === s.id ? " active" : ""}`} onClick={() => setUi({ section: s.id })} data-test={`sec-${s.id}`}>
             {s.label}
           </button>
@@ -92,12 +98,14 @@ function Vertical() {
       </div>
       <div className="section">
         <Ctl id="channel.display" n={n} />
+        <Ctl id="channel.label.content" n={n} label="Name" />
         <Ctl id="channel.scale" n={n} />
         <Ctl id="channel.offset" n={n} />
         <Ctl id="channel.coupling" n={n} />
         <Ctl id="channel.bwlimit" n={n} />
         <Ctl id="channel.impedance" n={n} />
         <Ctl id="channel.probe" n={n} />
+        <Ctl id="channel.averages" n={n} />
       </div>
       <div className="section">
         <div className="section-title">More</div>
@@ -107,7 +115,9 @@ function Vertical() {
         <Ctl id="channel.position" n={n} />
         <Ctl id="channel.tcalibrate" n={n} />
         <Ctl id="channel.label.show" n={n} />
-        <Ctl id="channel.label.content" n={n} />
+        <Ctl id="channel.label.position" n={n} />
+        <Ctl id="channel.deskew" n={n} />
+        <Ctl id="channel.interpolate" n={n} />
       </div>
       <p className="body-text">Wheel over the screen with <span className="key">Shift</span> steps this channel's V/div; drag its marker on the left edge to move the offset. Hold <span className="key">Shift</span> on the ‹ › buttons for fine steps.</p>
     </>
@@ -116,6 +126,7 @@ function Vertical() {
 
 function Horizontal() {
   useRead("timebase");
+  const lecroy = useReg().family === "lecroy";
   const srate = useLive((s) => s.values["acquire.srate"]);
   const mdepth = useLive((s) => s.values["acquire.mdepth"]);
   const tb = useLive((s) => s.values["timebase.scale"]);
@@ -130,6 +141,7 @@ function Horizontal() {
       <div className="section">
         <Ctl id="timebase.scale" />
         <Ctl id="timebase.offset" />
+        <Ctl id="timebase.delay" />
         <Ctl id="timebase.mode" />
         <Ctl id="timebase.vernier" />
         <Ctl id="timebase.hreference.mode" />
@@ -144,10 +156,10 @@ function Horizontal() {
       {mode.toUpperCase().startsWith("XY") && <GroupPanel group="timebase" sub="xy" title="XY mode" />}
       <div className="section">
         <div className="metric-row"><span>Sample rate</span><strong>{fmt(srate as number, "Sa/s", 3)}</strong></div>
-        <div className="metric-row"><span>Memory depth</span><strong>{String(mdepth ?? "—")}</strong></div>
+        <div className="metric-row"><span>Memory depth</span><strong>{typeof mdepth === "number" ? fmt(mdepth, "pts", 3) : String(mdepth ?? "—")}</strong></div>
         <div className="metric-row"><span>Record length</span><strong>{typeof srate === "number" && typeof tb === "number" ? fmt(srate * tb * C.instrument.divisions_x, "pts", 3) : "—"}</strong></div>
       </div>
-      <p className="body-text">Wheel over the screen steps the timebase; drag the T marker at the top to move the trigger point.</p>
+      <p className="body-text">{lecroy ? "Wheel over the screen steps the timebase. On a LeCroy the screen centre follows from Trigger delay." : "Wheel over the screen steps the timebase; drag the T marker at the top to move the trigger point."}</p>
     </>
   );
 }
@@ -156,7 +168,8 @@ function Trigger() {
   useRead("trigger", undefined, null);
   const mode = useLive((s) => String(s.values["trigger.mode"] ?? "EDGE"));
   const status = useLive((s) => s.status);
-  const sub = TRIGGER_SUB[mode];
+  const lecroy = useReg().family === "lecroy";
+  const sub = lecroy ? LECROY_TRIGGER_SUB[mode] : TRIGGER_SUB[mode];
   return (
     <>
       <div className="title-row">
@@ -166,22 +179,50 @@ function Trigger() {
       <div className="section">
         <Ctl id="trigger.mode" />
         <Ctl id="trigger.sweep" />
+        {lecroy && (
+          <>
+            <Ctl id="trigger.edge.source" />
+            <Ctl id="trigger.edge.level" />
+            <Ctl id="trigger.edge.slope" />
+          </>
+        )}
         <Ctl id="trigger.coupling" />
+        <Ctl id="trigger.holdoff.type" />
         <Ctl id="trigger.holdoff" />
+        <Ctl id="trigger.holdoff.events" />
         <Ctl id="trigger.nreject" />
         <div className="row" style={{ marginTop: 6 }}>
           <button className="btn small" onClick={() => void attempt(() => action("root.tforce"), "Trigger forced")}>Force trigger</button>
           <button className="btn small" onClick={() => void attempt(() => action("root.single"))}>Single</button>
+          {lecroy && <button className="btn small" onClick={() => void attempt(() => action("trigger.zerolevel"), "Level set to 0 V")}>Level to 0 V</button>}
         </div>
       </div>
-      {sub && <GroupPanel key={sub} group="trigger" sub={sub} />}
-      <p className="body-text">Drag the T marker on the right edge to set the edge level. Other trigger types show only the fields that apply to them, as the guide lists them.</p>
+      {sub === "logic" ? (
+        <div className="section">
+          <div className="section-title">Pattern (logic)</div>
+          <Ctl id="trigger.logic.type" />
+          {[1, 2, 3, 4].map((c) => (
+            <div key={c}>
+              <Ctl id="trigger.logic.state" n={c} label={`CH${c} state`} />
+              <Ctl id="trigger.logic.level" n={c} label={`CH${c} threshold`} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        sub && <GroupPanel key={sub} group="trigger" sub={sub} />
+      )}
+      <p className="body-text">
+        {lecroy
+          ? "Drag the T marker on the right edge to set the level. Each trigger type shows its own fields, as LeCroy's automation manual lists them; Source, Level and Slope above apply to all of them."
+          : "Drag the T marker on the right edge to set the edge level. Other trigger types show only the fields that apply to them, as the guide lists them."}
+      </p>
     </>
   );
 }
 
 function Acquire() {
   useRead("acquire");
+  const lecroy = useReg().family === "lecroy";
   return (
     <>
       <div className="title-row"><h2>Acquire</h2></div>
@@ -191,21 +232,33 @@ function Acquire() {
         <Ctl id="acquire.bits" />
         <Ctl id="acquire.mdepth" />
         <Ctl id="acquire.srate" />
+        <Ctl id="acquire.mode" />
+        <Ctl id="acquire.segments" />
+        <Ctl id="acquire.channels" />
+        <Ctl id="acquire.memorymode" />
+        <Ctl id="acquire.clearsweeps" />
       </div>
       <GroupPanel group="display" title="Display" />
-      <p className="body-text">Memory depth and sample rate trade against each other and against the number of channels on: 4 GSa/s with one channel, 2 GSa/s with two, 1 GSa/s with three or four (datasheet).</p>
+      <p className="body-text">
+        {lecroy
+          ? "Memory sets the most points a record may hold; the scope picks the sample rate from it and the timebase, up to its maximum. Averaging and ERES are per channel (Vertical) or math functions on the instrument."
+          : "Memory depth and sample rate trade against each other and against the number of channels on: 4 GSa/s with one channel, 2 GSa/s with two, 1 GSa/s with three or four (datasheet)."}
+      </p>
     </>
   );
 }
 
 function Measure() {
   useRead("measure", undefined, null);
+  const r = useReg();
+  const MEASUREMENTS = r.measurements;
   const rows = useLive((s) => s.measure);
-  const [item, setItem] = useState("VPP");
+  const [want, setItem] = useState(MEASUREMENTS[2].item);
   const [src1, setSrc1] = useState("CHANnel1");
   const [src2, setSrc2] = useState("CHANnel2");
-  const m = MEASUREMENTS.find((x) => x.item === item)!;
-  const sources = [...ANALOG_SOURCES, ...MATH_SOURCES];
+  const m = MEASUREMENTS.find((x) => x.item === want) ?? MEASUREMENTS[2];
+  const item = m.item;
+  const sources = r.measureSources;
   return (
     <>
       <div className="title-row"><h2>Measure</h2><span className="badge neutral">{rows.length}/{C.measure.max_items}</span></div>
@@ -256,11 +309,13 @@ function Measure() {
       </div>
       <GroupPanel group="measure" sub="threshold" title="Threshold type" />
       <GroupPanel group="measure" sub="setup" title="Reference levels" />
-      <div className="section">
-        <div className="section-title">All-measure</div>
-        <Ctl id="measure.amsource" />
-        <Ctl id="measure.statistic.display" label="Stats on screen" />
-      </div>
+      {r.family === "rigol" && (
+        <div className="section">
+          <div className="section-title">All-measure</div>
+          <Ctl id="measure.amsource" />
+          <Ctl id="measure.statistic.display" label="Stats on screen" />
+        </div>
+      )}
     </>
   );
 }

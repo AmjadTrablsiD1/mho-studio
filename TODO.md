@@ -25,12 +25,23 @@
 
 - Fixed after the first session on the real MHO984 over USB (2026-09-26): an unanswered query no longer drops the link or crashes the server; leftover replies from an earlier session are cleared; unanswered queries are learned per firmware; the settings watch is batched into compound queries; a server log.
 
+## Done (0.2.0, 2026-10-06)
+
+- **Teledyne LeCroy X-Stream support over VICP.** Driver layer (`server/drivers/`), family chosen from `*IDN?`; VICP framing with sequence numbers; WAVEDESC decoding; LeCroy registry with the common settings; PAVA measurements with cross-check; sparsed live screen; chunked deep memory; SCDP screenshots; PNSU setups; VBS from the console; simulated LeCroy over VICP; LAN tab protocol choice; discovery over VICP; views and sections hidden where the family lacks the feature; presets refuse to load on a different model. 27 new tests (core, service over VICP, one UI flow in both themes).
+
+## Done (0.2.1, 2026-10-06)
+
+- **LeCroy, fuller:** all eight trigger types of the X-Stream automation manual with their fields; holdoff; channel names (on the scope's screen and in the app); deskew, interpolation, bandwidth limit via automation; sampling mode, sequence segments, interleave, memory management; draggable trigger position; level to 0 V, clear sweeps. Property names checked against the June 2003 WaveMaster / WavePro 7000 automation manual.
+- **Windows 10 / 11:** `install-windows.bat` / `.ps1` (Node check, build, copy to %LOCALAPPDATA%, Desktop and Start-menu shortcuts); `run-mho-studio.bat` rewritten; cross-platform `npm test`; a Windows path bug in the UI tests fixed; `.github/workflows/ci.yml` runs everything on Windows and macOS.
+
 ## Doing
 
 - Nothing in progress.
 
 ## Next
 
+00. **Push to GitHub once** so the CI runs the tests and the installer on Windows (the only Windows run so far is none). Then install on the Windows 11 PC itself.
+0. **First session on the real LeCroy** (model still unknown; 40 GS/s, Windows, 10+ years old). In this order: Remote = TCPIP (VICP) and port 1861 reachable; `*IDN?` names it and the link pill shows the model; `CHDR OFF` takes effect (values parse; check the log for unanswered queries); traces overlay the scope's own screen (Screenshot) at a few V/div, offsets and timebases — this settles whether a sparsed descriptor's HORIZ_INTERVAL includes the sparsing factor (`pointInterval`) and the sign of TRDL; `HCSU DEV,PNG,PORT,NET` + `SCDP` gives an image (else try BMP: `C.lecroy.screenshot_setup`); `INR?` bit 0 means "new acquisition" (trigger badge); `PAVA?` reply layout; deep capture of a few Mpts (chunk size `lecroy.deep_chunk_points`) and its speed; `PNSU?` round trip; how VBS returns booleans (-1 or True: both are read); which automation properties this model lacks (logged as unanswered) and which trigger types it adds. Record what differs in `sim/README.md` and make `sim/lecroy.ts` match.
 1. **First session on the real MHO984.** Check, in this order: `*IDN?` and options; WORD byte order is detected and locked (Instrument view); traces overlay the scope's own screen (Screenshot) at several V/div and offsets; `:MEASure:ITEM?` agrees with the cross-check; deep capture of 25 Mpts (is 250 000 points per read accepted? adjust `instrument.raw_chunk_points`); Bode on a known RC. Record anything that differs from the guide in `sim/README.md` and make the simulator match.
 2. **Frame rate on hardware.** If the LAN round trip makes 4 channels slow, read `:WAVeform:PREamble?` only when settings change, or use BYTE for the live view.
 3. **USB on the real scope, continued:** probe every query once (finds all unanswered ones for fw 00.01.00 and any reply that does not match the guide's options); a 25 Mpt deep read over USB; Windows (Zadig/WinUSB) and Linux (udev).
@@ -41,6 +52,10 @@
 7. **Arbitrary waveform upload** to the generator (`:SOURce<n>:LOAD:ARBitrary` loads from the instrument's storage; the guide has no upload command — check the web interface).
 
 ## Someday
+
+- **More LeCroy panels** once the model is known: math functions (F1–F8), zoom, sequence mode, RIS, other trigger types — through VBS, as registry entries.
+- **Other families** (Keysight InfiniiVision, Tektronix MSO, Siglent SDS, R&S RTB/RTM): a registry, a driver and a simulator each; see ARCHITECTURE → "How to add another family".
+- **VXI-11** for instruments that offer it instead of a raw socket.
 
 - Multiple instruments in one window.
 - Scripted sequences (a list of SCPI steps with waits and captures) saved as recipes.

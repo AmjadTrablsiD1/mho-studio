@@ -1,18 +1,22 @@
-// Every settable and readable value in the MHO900 programming guide, grouped
-// as the guide groups them, each with its SCPI header and section on hover.
-// This is where "all of the instrument" lives when it has no dedicated panel.
+// Every settable and readable value the app knows for the instrument on the
+// line — the whole MHO900 programming guide on a RIGOL, the common X-Stream
+// set on a LeCroy — grouped, each with its command on hover. This is where
+// "all of the instrument" lives when it has no dedicated panel.
 
 import { useEffect, useMemo, useState } from "react";
-import { CONTROLS, groups, key } from "../../../core/src/registry/controls.ts";
+import { groups, key } from "../../../core/src/registry/controls.ts";
 import { GROUP_LABEL, mnemonicLabel } from "../../../core/src/registry/labels.ts";
 import { readKeys, useLive } from "../api.ts";
 import { Ctl, GroupPanel } from "../components/Controls.tsx";
+import { useReg } from "../registry.ts";
 
 const ORDER = ["channel", "timebase", "acquire", "trigger", "measure", "math", "source", "counter", "dvm", "cursor", "display", "la", "bus", "histogram", "mask", "record", "search", "navigate", "reference", "save", "load", "bodeplot", "autoset", "system", "lan", "quick", "root", "common", "waveform"];
 
 export function SettingsView() {
   const connected = useLive((s) => s.link?.state === "connected");
-  const all = useMemo(() => groups().sort((a, b) => (ORDER.indexOf(a.group) + 100) % 200 - (ORDER.indexOf(b.group) + 100) % 200), []);
+  const r = useReg();
+  const CONTROLS = r.controls;
+  const all = useMemo(() => groups(r.controls).sort((a, b) => (ORDER.indexOf(a.group) + 100) % 200 - (ORDER.indexOf(b.group) + 100) % 200), [r]);
   const [group, setGroup] = useState("trigger");
   const [n, setN] = useState(1);
   const [q, setQ] = useState("");
@@ -22,7 +26,7 @@ export function SettingsView() {
     const s = q.trim().toLowerCase();
     if (s.length < 2) return [];
     return CONTROLS.filter((c) => !c.hidden && (c.label.toLowerCase().includes(s) || c.header.toLowerCase().includes(s) || c.id.includes(s))).slice(0, 60);
-  }, [q]);
+  }, [q, CONTROLS]);
   useEffect(() => {
     if (connected && hits.length) void readKeys(hits.filter((c) => c.query).map((c) => key(c.id, c.suffix ? 1 : null))).catch(() => {});
   }, [connected, hits.map((h) => h.id).join()]);
@@ -31,7 +35,7 @@ export function SettingsView() {
     <>
       <div className="toolbar">
         <h1>All settings</h1>
-        <span className="hint">{count} values from the MHO900 programming guide — hover a label for its SCPI header</span>
+        <span className="hint">{count} values from the {r.doc} — hover a label for its command{r.family === "lecroy" ? "; anything else goes through VBS in the console" : ""}</span>
         <span className="grow" />
         <input className="input" style={{ width: 240 }} placeholder="Search: holdoff, :TRIG:SPI, baud…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search settings" data-test="settings-search" />
       </div>
@@ -50,7 +54,7 @@ export function SettingsView() {
               {hits.length === 0 && <p className="body-text">Nothing matches.</p>}
               {hits.map((c) => (
                 <div key={c.id}>
-                  <div className="muted mono" style={{ fontSize: 9.5, marginTop: 6 }}>{c.header} · §{c.section}{c.suffix ? " · shown for n = 1" : ""}</div>
+                  <div className="muted mono" style={{ fontSize: 9.5, marginTop: 6 }}>{c.header}{r.family === "rigol" ? ` · §${c.section}` : ""}{c.suffix ? " · shown for n = 1" : ""}</div>
                   <Ctl id={c.id} n={c.suffix ? 1 : null} />
                 </div>
               ))}

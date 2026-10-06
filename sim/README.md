@@ -71,3 +71,63 @@ GEN 1 on at 5 kHz 2 Vpp sine, edge trigger on CH1 rising at 0 V.
 ## Assumptions that the real instrument must still confirm
 - **Chunk size for RAW reads**: the app reads 250 000 points per `:WAVeform:DATA?`.
 - **String arguments unquoted** (labels), as in the guide's examples.
+
+# The simulated LeCroy X-Stream
+
+`sim/lecroy.ts` behind `sim/lecroy-server.ts` (VICP on a TCP port; `node
+sim/main.ts --lecroy` runs it alone on 1861). It stands in for an **unknown**
+40 GS/s X-Stream model; every number in `constants.json → lecroy.sim` is the
+simulator's choice, not any real model's datasheet value.
+
+## The bench
+
+- CH1 — 10 MHz sine, 0.8 Vpp
+- CH2 — the 1 MHz 3.3 V clock with ringing (same as the RIGOL bench's CH3)
+- CH3 — 100 kHz square, 1 Vpp
+- CH4 — the UART burst (same as the RIGOL bench's CH4)
+
+8-bit codes (25 per division) sent as 16-bit words (× 256), Gaussian noise.
+Sample rate = memory ÷ (10 × TDIV), at most 40 GS/s.
+
+## Modelled
+
+- VICP framing; replies carry the query's sequence number.
+- `CHDR` (header on by default: `C1:VDIV 100E-3 V`; off: `100E-3 V`), `CFMT`, `CORD`.
+- `C<n>:TRA/VDIV/OFST/CPL/ATTN/TRLV/TRSL/TRCP`, `BWL` (pairs), `TDIV`, `TRDL`,
+  `MSIZ` (snapped to its list; answers `100K`, `10MA`), `TRMD` (SINGLE stops after one
+  acquisition), `TRSE EDGE,SR,…`, `ARM`, `STOP`, `FRTR`, `ASET`, `*RST`, `*CLS`, `*OPC?`.
+- `WFSU SP,NP,FP,SN` and `C<n>:WF? DESC|ALL` with a LECROY_2_3 WAVEDESC
+  (HORIZ_INTERVAL of a sparsed record includes the sparsing factor — the real
+  instrument may differ; the app copes with both).
+- `C<n>:PAVA? <name>` from the app's own measurement code (`OK`, `NP` or `IV`).
+- `CMR?` (1 = unrecognized header, 3 = bad number, 5 = bad keyword), `EXR?`,
+  `INR?` (bit 0 set by each acquisition, cleared by reading).
+- `HCSU`, `SCDP` (a PNG of its own screen, raw bytes), `PNSU?` / `PNSU #9…`.
+- `VBS?` for `Horizontal.SamplingRate`, `Horizontal.SampleMode`, `C<n>.Invert`,
+  `C<n>.AverageSweeps`; `VBS 'app.…= …'` for the last two.
+- An unknown command or query: no reply, `CMR` = 1 (what the manual describes).
+
+## Not modelled
+
+Math, zoom, memories, other trigger types, sequence mode, RIS, roll, ERES,
+averaging's effect on the data, digital channels, real timing (it answers in
+~2 ms), and every VBS property not listed above.
+
+## Assumptions the real instrument must confirm
+
+Written from the remote control manual, so these are the manual's word, not
+measurements: the reply layout of `PAVA?` and `WF?` with headers off; whether
+`HCSU DEV,PNG,PORT,NET` is accepted on an old model; `INR?` bit 0's meaning;
+`TRDL`'s sign; HORIZ_INTERVAL under sparsing. See TODO → Next → 0.
+
+### Automation properties (since 0.2.1)
+
+Every `VBS? 'return=app.…'` / `VBS 'app.… = …'` property in the app's LeCroy
+registry is answered from a store generated from that registry, with the
+manual's option lists enforced (a value outside them sets EXR and changes
+nothing). Some are wired to the simulated bench: channel invert, averaging,
+bandwidth limit, V/div and offset; trigger source, per-source level and slope;
+HorOffset (trigger position); sampling rate. The others (trigger types and
+their fields, labels, sample mode, segments…) are stored and returned only:
+the simulator always triggers on an edge of the trigger source, whatever type
+is selected. Booleans come back as -1 / 0.

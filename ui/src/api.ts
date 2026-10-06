@@ -11,6 +11,8 @@ export type UsbInfo = { id: string; vendorId: number; productId: number; manufac
 export type Link = {
   state: "idle" | "connecting" | "connected" | "lost";
   kind: "tcp" | "usb" | "sim";
+  protocol: "raw" | "vicp";
+  family: "rigol" | "lecroy";
   usb: UsbInfo | null;
   host: string;
   port: number;
@@ -50,7 +52,7 @@ export type BodeState = {
 export type DeepMeta = { channels: { src: string; points: number; pre: { xinc: number; xorigin: number } }[]; capturedAt: string; points: number; xinc: number; xorigin: number; seconds: number };
 export type DeepProgress = { src: string; done: number; total: number; channel: number; channels: number; bytesPerSec: number };
 export type Preset = { name: string; savedAt: string; model: string; firmware: string; bytes: number };
-export type Settings = { host: string; port: number; recent: string[]; lastKind: "tcp" | "usb" | "sim" | null; usbId: string | null };
+export type Settings = { host: string; port: number; protocol: "raw" | "vicp"; recent: string[]; lastKind: "tcp" | "usb" | "sim" | null; usbId: string | null; simModel: "rigol" | "lecroy" };
 
 export type Trace = { src: string; points: number; xinc: number; xorigin: number; volts: Float32Array };
 export type Frame = { t: number; seq: number; status: string; traces: Trace[] };

@@ -48,31 +48,13 @@ exec "$NODE" "$DEST/server/main.ts" "\$@"
 LAUNCH
 chmod +x "$CMD"
 
-# 5. The Windows launcher — WRITTEN BUT NEVER RUN (there is no Windows machine here).
-cat > "$SRC/run-$APP_ID.bat" <<'WINEOF'
-@echo off
-REM UNTESTED: written on a Mac, never run on Windows. Needs Node 22.18+ on PATH.
-REM The oscilloscope must be reachable on the LAN (raw SCPI, TCP port 5555), or on USB:
-REM for USB the scope's interface needs the WinUSB driver (Zadig) if NI-VISA/UltraSigma claimed it.
-cd /d "%~dp0"
-if not exist server\node_modules\usb (
-  pushd server
-  call npm install --omit=dev
-  popd
-)
-if not exist ui\dist\index.html (
-  pushd ui
-  call npm install
-  call npm run build
-  popd
-)
-start "" node "%~dp0server\main.ts"
-WINEOF
+# 5. Windows: install-windows.bat / install-windows.ps1 and run-mho-studio.bat are kept
+#    as files in the repo (CRLF, see .gitattributes); this script does not write them.
 
 # 6. App Launcher tile and .app bundle (the Launcher's own install-time tool).
 python3 "$DEST/scripts/register_launcher.py" \
   --id "$APP_ID" --name "$APP_NAME" --icon "$APP_ICON" --category "Apps" \
-  --description "RIGOL MHO984: live scope, full command set, deep memory, FFT, Bode, decode, SCPI console" \
+  --description "RIGOL MHO900 and Teledyne LeCroy scopes: live scope, settings, triggers, deep memory, FFT, screenshots, console" \
   --cwd "$DEST" \
   --command "\"$NODE\" \"$DEST/server/main.ts\"" \
   --bundle || true

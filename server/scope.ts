@@ -6,32 +6,38 @@
 // says so when that differs from what was asked for.
 
 import { C } from "../core/src/constants.ts";
-import { BY_ID, CONTROLS, key, keysOf, parseKey, relevant, type Control } from "../core/src/registry/controls.ts";
-import { render } from "../core/src/scpi/header.ts";
-import { encode, matchOption, parseBool, parseError, parseIdn, parseNumber, type Identity, type Value } from "../core/src/scpi/values.ts";
-import { codes, detectWordOrder, parsePreamble, toVolts, type ByteOrder, type Preamble } from "../core/src/wave/decode.ts";
+import { key, keysOf, parseKey, relevant, type Control } from "../core/src/registry/controls.ts";
+import { familyOf, protocolForPort, type Family, type Protocol, type Registry } from "../core/src/registry/families.ts";
+import { encode, matchOption, parseBool, parseIdn, parseNumber, type Identity, type Value } from "../core/src/scpi/values.ts";
+import { lecroyIdn } from "../core/src/scpi/lecroy.ts";
+import { codes, detectWordOrder, toVolts, type ByteOrder, type Preamble } from "../core/src/wave/decode.ts";
 import { delay, measureAll, Stats } from "../core/src/dsp/measure.ts";
-import { MEASUREMENT_BY_ITEM, type Slot } from "../core/src/registry/measurements.ts";
+import type { Slot } from "../core/src/registry/measurements.ts";
 import { ScpiClient, ScpiError, type Traffic } from "./scpi.ts";
 import { transportStatus, type Conn } from "./transport.ts";
 import { openUsb, type UsbInfo } from "./usbtmc.ts";
 import { loadSettings, loadUnsupported, saveSettings, saveUnsupported } from "./store.ts";
 import { log } from "./log.ts";
-import { startSim, type SimHandle } from "../sim/server.ts";
+import { startSim } from "../sim/server.ts";
+import { startLecroySim } from "../sim/lecroy-server.ts";
+import { HttpError } from "./errors.ts";
+import { RigolDriver } from "./drivers/rigol.ts";
+import { LecroyDriver } from "./drivers/lecroy.ts";
+import type { Driver } from "./drivers/types.ts";
 
-export class HttpError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
+export { HttpError };
+export type SimModel = Family;
+type SimRunning = { port: number; close: () => Promise<void> };
 
 export type LinkState = "idle" | "connecting" | "connected" | "lost";
 export type LinkKind = "tcp" | "usb" | "sim";
 export type Link = {
   state: LinkState;
   kind: LinkKind;
+  /** How messages are framed on TCP: raw SCPI lines (RIGOL) or VICP (LeCroy). */
+  protocol: Protocol;
+  /** Which driver speaks to it, chosen from *IDN?. */
+  family: Family;
   usb: UsbInfo | null;
   host: string;
   port: number;
@@ -55,7 +61,7 @@ export type Latest = { volts: Float32Array; pre: Preamble; t: number };
 
 export class ScopeService {
   readonly scpi = new ScpiClient();
-  link: Link = { state: "idle", kind: "tcp", usb: null, host: "", port: C.instrument.scpi_port, sim: false, idn: null, error: null, transport: null, rttMs: null, wordOrder: C.wire.word_order_default as ByteOrder, wordOrderLocked: false, modelWarning: null };
+  link: Link = { state: "idle", kind: "tcp", protocol: "raw", family: "rigol", usb: null, host: "", port: C.instrument.scpi_port, sim: false, idn: null, error: null, transport: null, rttMs: null, wordOrder: C.wire.word_order_default as ByteOrder, wordOrderLocked: false, modelWarning: null };
   values = new Map<string, Value>();
   options: Record<string, boolean> = {};
   status = "—";
@@ -69,7 +75,10 @@ export class ScopeService {
   traffic: Traffic[] = [];
   frames = 0;
   fps = 0;
-  private sim: SimHandle | null = null;
+  private sim: SimRunning | null = null;
+  private simModel: SimModel | null = null;
+  /** The family driver, chosen at connect from *IDN?. */
+  drv: Driver = new RigolDriver(this);
   private loopToken = 0;
   private frameDirty = true;
   private wantConnected = false;
@@ -117,28 +126,34 @@ export class ScopeService {
   /** How the USB link is opened; tests put a virtual USB-TMC device here. */
   usbOpener: (id?: string | null) => Promise<{ conn: Conn; info: UsbInfo }> = openUsb;
 
-  async connect(opts: { host?: string; port?: number; sim?: boolean; usb?: boolean; usbId?: string | null }): Promise<Link> {
+  async connect(opts: { host?: string; port?: number; sim?: boolean; simModel?: SimModel; usb?: boolean; usbId?: string | null; protocol?: Protocol }): Promise<Link> {
     this.wantConnected = true;
     this.loopToken++;
     this.scpi.close("reopen");
     const kind: LinkKind = opts.usb ? "usb" : opts.sim ? "sim" : "tcp";
     let host = (opts.host ?? "").trim();
     let port = Number(opts.port ?? C.instrument.scpi_port);
+    let protocol: Protocol = opts.protocol === "vicp" || opts.protocol === "raw" ? opts.protocol : protocolForPort(port);
     if (kind === "sim") {
-      if (!this.sim) this.sim = await startSim(0);
+      const model: SimModel = opts.simModel === "lecroy" ? "lecroy" : "rigol";
+      if (this.sim && this.simModel !== model) await this.stopSim();
+      if (!this.sim) this.sim = model === "lecroy" ? await startLecroySim(0) : await startSim(0);
+      this.simModel = model;
       host = "127.0.0.1";
       port = this.sim.port;
+      protocol = model === "lecroy" ? "vicp" : "raw";
     } else if (kind === "usb") {
       host = "USB";
       port = 0;
+      protocol = "raw";
     } else {
-      if (!host) throw new HttpError(400, "enter the oscilloscope's IP address (Utility → I/O → LAN on the MHO984)");
+      if (!host) throw new HttpError(400, "enter the oscilloscope's IP address (Utility → I/O → LAN on a RIGOL; Windows network settings on a LeCroy)");
       if (!/^[\w.:-]+$/.test(host)) throw new HttpError(400, "host must be a hostname or an IP address");
       if (!(port > 0 && port < 65536)) throw new HttpError(400, "port must be 1–65535");
     }
     this.values.clear();
     this.latest.clear();
-    this.setLink({ state: "connecting", kind, host, port, sim: kind === "sim", usb: null, error: null, idn: null, modelWarning: null, wordOrderLocked: false });
+    this.setLink({ state: "connecting", kind, protocol, host, port, sim: kind === "sim", usb: null, error: null, idn: null, modelWarning: null, wordOrderLocked: false });
     try {
       await this.openLink(kind, host, port, opts.usbId ?? null);
       await this.handshake();
@@ -148,28 +163,36 @@ export class ScopeService {
       throw new HttpError(502, this.link.error!);
     }
     const s = loadSettings();
-    if (kind === "tcp") saveSettings({ ...s, host, port, lastKind: "tcp", recent: [host, ...s.recent.filter((h) => h !== host)].slice(0, 8) });
+    if (kind === "tcp") saveSettings({ ...s, host, port, protocol, lastKind: "tcp", recent: [host, ...s.recent.filter((h) => h !== host)].slice(0, 8) });
     else if (kind === "usb") saveSettings({ ...s, lastKind: "usb", usbId: this.link.usb?.id ?? null });
-    else saveSettings({ ...s, lastKind: "sim" });
+    else saveSettings({ ...s, lastKind: "sim", simModel: this.simModel ?? "rigol" });
     this.startLoop();
     return this.link;
   }
 
-  /** Open the byte stream for a link: a TCP socket, or the USB-TMC interface. */
+  private async stopSim(): Promise<void> {
+    const sim = this.sim;
+    this.sim = null;
+    this.simModel = null;
+    if (sim) await sim.close();
+  }
+
+  /** Open the byte stream for a link: a TCP socket (raw or VICP), or the USB-TMC interface. */
   private async openLink(kind: LinkKind, host: string, port: number, usbId: string | null): Promise<void> {
     if (kind === "usb") {
       const { conn, info } = await this.usbOpener(usbId);
       this.scpi.attach(conn, "USB", 0);
       this.link = { ...this.link, usb: info };
     } else {
-      await this.scpi.open(host, port);
+      await this.scpi.open(host, port, this.link.protocol);
     }
   }
 
   private explain(e: Error, host: string, port: number): string {
     const code = (e as NodeJS.ErrnoException).code ?? (e as ScpiError).code ?? "";
     if (host === "USB") return e.message;
-    if (code === "ECONNREFUSED") return `${host} refused port ${port}. Is it the oscilloscope, and is LAN enabled (Utility → I/O)?`;
+    if (code === "ECONNREFUSED" && this.link.protocol === "vicp") return `${host} refused port ${port}. On the LeCroy, Utilities → Utilities Setup → Remote must be set to TCPIP (VICP), and the Windows firewall on the scope must let port ${port} in.`;
+    if (code === "ECONNREFUSED") return `${host} refused port ${port}. Is it the oscilloscope, and is LAN enabled (Utility → I/O)? A LeCroy listens on port ${C.lecroy.vicp_port} (VICP).`;
     if (code === "ETIMEDOUT" || /within/.test(e.message)) return `No answer from ${host}:${port}. Check the cable, the IP address and that the PC is on the same network.`;
     if (code === "EHOSTUNREACH" || code === "ENETUNREACH") return `${host} is unreachable from this computer (${code}). On macOS, check System Settings → Privacy & Security → Local Network.`;
     return e.message;
@@ -178,39 +201,47 @@ export class ScopeService {
   private async handshake(): Promise<void> {
     // A reply left over from a previous session can answer the first question (seen over USB);
     // the stream clears it and reports no reply, so ask once more.
-    const idn = parseIdn(await this.scpi.query("*IDN?").catch((e) => {
+    const raw = await this.scpi.query("*IDN?").catch((e) => {
       if (e instanceof ScpiError && e.code === "ENOREPLY") return this.scpi.query("*IDN?");
       throw e;
-    }));
-    const warn = /MHO9/i.test(idn.model) ? null : `This app is built for the MHO984; "${idn.model || idn.raw}" answered. Commands follow the MHO900 guide and may differ on it.`;
-    this.setLink({ state: "connected", idn, transport: this.link.kind === "usb" ? "usb-tmc" : transportStatus().active, modelWarning: warn, error: null });
+    });
+    const family = familyOf(raw.trim().replace(/^\*?IDN\s+/i, ""));
+    const idn = family === "lecroy" ? lecroyIdn(raw) : parseIdn(raw);
+    this.drv = family === "lecroy" ? new LecroyDriver(this) : new RigolDriver(this);
+    this.slots = [];
+    this.stats.clear();
+    this.cross.clear();
     this.scpi.syncToken = idn.raw;
-    this.unsupported = new Set(loadUnsupported(this.firmwareKey()));
-    this.broadcast("unsupported", [...this.unsupported]);
-    log(`connected: ${idn.raw} over ${this.link.kind}${this.unsupported.size ? `; ${this.unsupported.size} queries known unanswered on this firmware` : ""}`);
-    await this.scpi.write("*CLS");
+    this.unsupported = new Set(loadUnsupported(`${idn.model} ${idn.firmware}`));
     this.options = {};
-    for (const o of C.instrument.options) {
-      const r = await this.scpi.query(`:SYSTem:OPTion:STATus? ${o}`).catch(() => "0");
-      this.options[o] = parseBool(r) === true;
-    }
+    this.scpi.syncToken = await this.drv.init(raw);
+    const warn =
+      family === "lecroy"
+        ? this.link.sim ? null : `LeCroy support follows the X-Stream remote control manual and has been tested on the simulator only; "${idn.model}" is the first real one it meets. Values it does not answer are learned and skipped.`
+        : /MHO9/i.test(idn.model) ? null : `This app is built for the MHO984; "${idn.model || idn.raw}" answered. Commands follow the MHO900 guide and may differ on it.`;
+    this.setLink({ state: "connected", family, idn, transport: this.link.kind === "usb" ? "usb-tmc" : this.link.protocol === "vicp" ? `vicp over ${transportStatus().active ?? "tcp"}` : transportStatus().active, modelWarning: warn, error: null });
+    this.broadcast("unsupported", [...this.unsupported]);
+    this.broadcast("measure", this.measureRows());
+    log(`connected: ${idn.raw} over ${this.link.kind}/${this.link.protocol} as ${family}${this.unsupported.size ? `; ${this.unsupported.size} queries known unanswered on this firmware` : ""}`);
     await this.drainErrors();
     this.broadcast("options", this.options);
     await this.readKeys(this.primaryKeys());
     await this.readKeys(this.triggerTypeKeys());
-    this.status = (await this.scpi.query(":TRIGger:STATus?")).trim();
+    this.status = await this.drv.status();
     this.broadcast("status", this.status);
     this.frameDirty = true;
+  }
+
+  /** The control table of the instrument on the line. */
+  get reg(): Registry {
+    return this.drv.reg;
   }
 
   async disconnect(): Promise<Link> {
     this.wantConnected = false;
     this.loopToken++;
     this.scpi.close("closed");
-    if (this.sim) {
-      await this.sim.close();
-      this.sim = null;
-    }
+    await this.stopSim();
     this.setLink({ state: "idle", error: null });
     return this.link;
   }
@@ -253,45 +284,35 @@ export class ScopeService {
   // --------------------------------------------------------------- values
 
   primaryKeys(): string[] {
-    return CONTROLS.filter((c) => c.primary && c.query && this.has(c.needs)).flatMap(keysOf);
+    return this.reg.controls.filter((c) => c.primary && c.query && this.has(c.needs)).flatMap(keysOf);
   }
 
   triggerTypeKeys(): string[] {
     const mode = String(this.values.get("trigger.mode") ?? "EDGE");
     return this.groupKeys("trigger", null).filter((k) => {
-      const c = BY_ID.get(parseKey(k).id)!;
-      return c.sub && c.when && relevant(c, null, () => mode);
+      const c = this.reg.byId.get(parseKey(k).id)!;
+      return c.sub && c.when?.id === "trigger.mode" && relevant(c, null, () => mode, this.reg.byId);
     });
   }
 
   /** Every readable key in a group (optionally one sub-group and one suffix). */
   groupKeys(group: string, sub: string | null | undefined, n?: number): string[] {
-    return CONTROLS.filter((c) => c.group === group && (sub === undefined || c.sub === sub) && c.query && !c.hidden && this.has(c.needs))
+    return this.reg.controls.filter((c) => c.group === group && (sub === undefined || c.sub === sub) && c.query && !c.hidden && this.has(c.needs))
       .flatMap((c) => (c.suffix ? (n ? [key(c.id, n)] : keysOf(c)) : [c.id]));
   }
 
-  parse(c: Control, reply: string): Value {
-    const r = reply.trim();
-    switch (c.kind) {
-      case "number":
-        return parseNumber(r);
-      case "bool":
-        return parseBool(r);
-      case "enum":
-        return matchOption(r, c.options?.map((o) => o.value) ?? []) ?? r;
-      case "readonly":
-        return c.unit && Number.isFinite(Number(r)) ? parseNumber(r) : r;
-      default:
-        return r;
-    }
+  private queryOf(k: string): { c: Control; n: number | null; q: string } {
+    const { id, n } = parseKey(k);
+    const c = this.reg.byId.get(id);
+    if (!c) throw new HttpError(404, `no control ${id} on this instrument`);
+    if (!c.query) throw new HttpError(400, `${c.header} cannot be read`);
+    return { c, n, q: this.drv.queryOf(c, n) };
   }
 
-  private queryOf(k: string): { c: Control; q: string } {
-    const { id, n } = parseKey(k);
-    const c = BY_ID.get(id);
-    if (!c) throw new HttpError(404, `no control ${id}`);
-    if (!c.query) throw new HttpError(400, `${c.header} cannot be read`);
-    return { c, q: `${render(c.header, c.suffix ? { [c.suffix.name]: n ?? 1 } : {})}?` };
+  /** A value the driver works out itself (LeCroy's screen centre, from each record). */
+  setComputed(k: string, v: Value): void {
+    this.values.set(k, v);
+    this.broadcast("values", { [k]: v });
   }
 
   /**
@@ -300,13 +321,13 @@ export class ScopeService {
    * plus a clear, and a settings panel may hold dozens.
    */
   async readKey(k: string): Promise<Value> {
-    const { c, q } = this.queryOf(k);
+    const { c, n, q } = this.queryOf(k);
     if (this.unsupported.has(c.id)) {
       this.values.set(k, null);
       return null;
     }
     try {
-      const v = this.parse(c, await this.scpi.query(q, C.instrument.value_timeout_ms));
+      const v = this.drv.parse(c, n, await this.scpi.query(q, C.instrument.value_timeout_ms));
       this.values.set(k, v);
       return v;
     } catch (e) {
@@ -318,6 +339,10 @@ export class ScopeService {
   /** Several values in one compound query (":A?;:B?"): one USB/TCP round trip instead of one each. */
   private async readBatch(keys: string[]): Promise<void> {
     const live = keys.filter((k) => !this.unsupported.has(parseKey(k).id));
+    if (!this.reg.features.compound) {
+      for (const k of live) await this.readKey(k).catch((e) => this.tolerate(e));
+      return;
+    }
     for (let i = 0; i < live.length; i += C.instrument.batch_queries) {
       const group = live.slice(i, i + C.instrument.batch_queries);
       const qs = group.map((k) => this.queryOf(k));
@@ -328,7 +353,7 @@ export class ScopeService {
         if (!(e instanceof ScpiError) || e.code !== "ENOREPLY") throw e;
       }
       if (parts && parts.length === group.length) {
-        group.forEach((k, j) => this.values.set(k, this.parse(qs[j].c, parts![j])));
+        group.forEach((k, j) => this.values.set(k, this.drv.parse(qs[j].c, qs[j].n, parts![j])));
       } else {
         // One of them is not answered (or a value held a ';'): ask one by one, which also finds the culprit.
         for (const k of group) await this.readKey(k).catch((e) => this.tolerate(e));
@@ -385,15 +410,9 @@ export class ScopeService {
     return out;
   }
 
-  /** Read and clear the instrument's error queue. */
-  async drainErrors(): Promise<{ code: number; message: string }[]> {
-    const errs: { code: number; message: string }[] = [];
-    for (let i = 0; i < 8; i++) {
-      const e = parseError(await this.scpi.query(":SYSTem:ERRor?"));
-      if (e.code === 0) break;
-      errs.push(e);
-    }
-    return errs;
+  /** Read and clear the instrument's error queue (registers, on a LeCroy). */
+  drainErrors(): Promise<{ code: number; message: string }[]> {
+    return this.drv.errors();
   }
 
   private needsConfirm(c: Control, v: Value): boolean {
@@ -406,8 +425,8 @@ export class ScopeService {
   async write(k: string, value: Value, confirmed = false) {
     this.need();
     const { id, n } = parseKey(k);
-    const c = BY_ID.get(id);
-    if (!c) throw new HttpError(404, `no control ${id}`);
+    const c = this.reg.byId.get(id);
+    if (!c) throw new HttpError(404, `no control ${id} on this instrument`);
     if (!c.set || c.kind === "readonly") throw new HttpError(400, `${c.label} is read-only`);
     if (c.kind === "action") throw new HttpError(400, `${c.label} is an action`);
     if (c.suffix && n !== null && !c.suffix.values.includes(n)) throw new HttpError(400, `${c.label}: no ${c.suffix.name}=${n}`);
@@ -422,9 +441,12 @@ export class ScopeService {
       v = o;
     }
     if (this.needsConfirm(c, v) && !confirmed) throw new HttpError(409, c.confirm!);
-    const sfx = c.suffix ? { [c.suffix.name]: n ?? 1 } : {};
     const result = await this.scpi.exclusive(async () => {
-      await this.scpi.write(`${render(c.header, sfx)} ${encode(v, c.kind as "number" | "enum" | "bool" | "string")}`);
+      await this.scpi.write(this.drv.setOf(c, c.suffix ? (n ?? 1) : null, v));
+      for (const t of c.then ?? []) {
+        const tc = this.reg.byId.get(t.id);
+        if (tc) await this.scpi.write(this.drv.setOf(tc, tc.suffix ? (n ?? 1) : null, t.value));
+      }
       await sleep(C.loops.after_write_settle_ms);
       const readback = c.query
         ? await this.readKey(k).catch((e) => {
@@ -432,8 +454,8 @@ export class ScopeService {
             return v;
           })
         : v;
-      const also = (c.after ?? []).flatMap((a) => {
-        const ac = BY_ID.get(a);
+      const also = [...(c.after ?? []), ...(c.then ?? []).map((t) => t.id)].flatMap((a) => {
+        const ac = this.reg.byId.get(a);
         if (!ac?.query) return [];
         return ac.suffix ? (c.suffix ? [key(a, n ?? 1)] : keysOf(ac)) : [a];
       });
@@ -451,10 +473,10 @@ export class ScopeService {
 
   async action(id: string, n: number | null, confirmed = false) {
     this.need();
-    const c = BY_ID.get(id);
-    if (!c || c.kind !== "action") throw new HttpError(404, `no action ${id}`);
+    const c = this.reg.byId.get(id);
+    if (!c || c.kind !== "action") throw new HttpError(404, `no action ${id} on this instrument`);
     if (c.confirm && !confirmed) throw new HttpError(409, c.confirm);
-    await this.scpi.write(render(c.header, c.suffix ? { [c.suffix.name]: n ?? 1 } : {}));
+    await this.drv.action(c, n);
     if (id === "root.autoset" || id === "common.rst" || id === "system.reset") {
       await sleep(id === "root.autoset" ? 1500 : 800);
       await this.scpi.query("*OPC?", 15000).catch(() => "");
@@ -462,7 +484,7 @@ export class ScopeService {
       await this.readKeys(this.triggerTypeKeys());
     }
     const errors = await this.drainErrors();
-    this.status = (await this.scpi.query(":TRIGger:STATus?")).trim();
+    this.status = await this.drv.status();
     this.broadcast("status", this.status);
     this.frameDirty = true;
     return { id, errors, status: this.status };
@@ -491,7 +513,7 @@ export class ScopeService {
         }
         if (t0 - lastStatus >= C.loops.status_period_ms) {
           lastStatus = t0;
-          const st = (await this.scpi.query(":TRIGger:STATus?")).trim();
+          const st = await this.drv.status();
           if (st !== this.status) {
             this.status = st;
             this.broadcast("status", st);
@@ -534,27 +556,18 @@ export class ScopeService {
     }
   }
 
-  /** Which sources are on screen: displayed channels and math. */
+  /** Which sources are on screen: displayed channels (and math, on a RIGOL). */
   visibleSources(): string[] {
-    const out: string[] = [];
-    for (let n = 1; n <= C.instrument.analog_channels; n++) if (this.values.get(key("channel.display", n)) === true) out.push(`CHANnel${n}`);
-    for (let n = 1; n <= C.instrument.math_channels; n++) if (this.values.get(key("math.display", n)) === true) out.push(`MATH${n}`);
-    return out;
+    return this.drv.visibleSources();
   }
 
-  /** One screen of every visible source (NORMal mode, 1000 points). */
+  /** One screen record of every visible source. */
   async frame(): Promise<void> {
     const srcs = this.visibleSources();
-    const word = C.wire.prefer_word_format;
     const traces: Trace[] = [];
     await this.scpi.exclusive(async () => {
-      await this.scpi.write(`:WAVeform:MODE NORMal`);
-      await this.scpi.write(`:WAVeform:FORMat ${word ? "WORD" : "BYTE"}`);
-      for (const src of srcs) {
-        await this.scpi.write(`:WAVeform:SOURce ${src}`);
-        const pre = parsePreamble(await this.scpi.query(":WAVeform:PREamble?"));
-        const data = await this.scpi.queryBlock(":WAVeform:DATA?", C.instrument.query_timeout_ms * 2);
-        const volts = this.decode(data, pre);
+      const recs = await this.drv.frame(srcs);
+      for (const [src, { volts, pre }] of recs) {
         this.latest.set(src, { volts, pre, t: Date.now() });
         traces.push({ src, points: volts.length, xinc: pre.xinc, xorigin: pre.xorigin, yinc: pre.yinc, volts: b64(volts) });
       }
@@ -566,12 +579,8 @@ export class ScopeService {
   /** One screen record of one source, outside the live loop (Bode uses it). */
   async readTrace(src: string): Promise<Latest> {
     return this.scpi.exclusive(async () => {
-      await this.scpi.write(`:WAVeform:SOURce ${src}`);
-      await this.scpi.write(`:WAVeform:MODE NORMal`);
-      await this.scpi.write(`:WAVeform:FORMat ${C.wire.prefer_word_format ? "WORD" : "BYTE"}`);
-      const pre = parsePreamble(await this.scpi.query(":WAVeform:PREamble?"));
-      const volts = this.decode(await this.scpi.queryBlock(":WAVeform:DATA?"), pre);
-      const l = { volts, pre, t: Date.now() };
+      const r = await this.drv.readTrace(src);
+      const l = { ...r, t: Date.now() };
       this.latest.set(src, l);
       return l;
     });
@@ -594,7 +603,7 @@ export class ScopeService {
 
   /** Values a person may change at the instrument itself. */
   private async watch(): Promise<void> {
-    const keys = CONTROLS.filter((c) => c.watch && c.query && this.has(c.needs)).flatMap(keysOf);
+    const keys = this.reg.controls.filter((c) => c.watch && c.query && this.has(c.needs)).flatMap(keysOf);
     const before = new Map(keys.map((k) => [k, this.values.get(k) ?? null]));
     await this.readBatch(keys);
     const changed: Record<string, Value> = {};
@@ -610,13 +619,13 @@ export class ScopeService {
 
   async addMeasurement(item: string, src1: string, src2?: string): Promise<MeasureRow[]> {
     this.need();
-    const m = MEASUREMENT_BY_ITEM.get(item);
-    if (!m) throw new HttpError(400, `unknown measurement ${item}`);
+    const m = this.reg.measurements.find((x) => x.item === item);
+    if (!m) throw new HttpError(400, `unknown measurement ${item} on this instrument`);
     if (m.dual && !src2) throw new HttpError(400, `${m.label} needs two sources`);
     if (this.slots.length >= C.measure.max_items) throw new HttpError(400, `at most ${C.measure.max_items} measurements`);
     if (!/^(CHANnel[1-4]|MATH[1-4]|D\d{1,2})$/.test(src1) || (src2 && !/^(CHANnel[1-4]|MATH[1-4]|D\d{1,2})$/.test(src2))) throw new HttpError(400, "bad source");
     const slot: Slot = { id: `m${++this.slotSeq}`, item, src1, src2: m.dual ? src2 : undefined };
-    await this.scpi.write(`:MEASure:ITEM ${item},${src1}${slot.src2 ? `,${slot.src2}` : ""}`);
+    await this.drv.addMeasurement(slot);
     await this.drainErrors();
     this.slots.push(slot);
     this.stats.set(slot.id, new Stats());
@@ -629,9 +638,7 @@ export class ScopeService {
     this.stats.delete(id);
     this.cross.delete(id);
     if (this.ready) {
-      // The guide only offers "delete all"; put the rest back.
-      await this.scpi.write(":MEASure:DELete");
-      for (const s of this.slots) await this.scpi.write(`:MEASure:ITEM ${s.item},${s.src1}${s.src2 ? `,${s.src2}` : ""}`);
+      await this.drv.measurementsChanged(this.slots);
       await this.drainErrors();
     }
     const rows = this.measureRows();
@@ -655,8 +662,7 @@ export class ScopeService {
 
   private async readMeasurements(): Promise<void> {
     for (const s of this.slots) {
-      const r = await this.scpi.query(`:MEASure:ITEM? ${s.item},${s.src1}${s.src2 ? `,${s.src2}` : ""}`);
-      this.stats.get(s.id)?.add(parseNumber(r));
+      this.stats.get(s.id)?.add(await this.drv.readMeasurement(s));
       this.cross.set(s.id, this.crossCheck(s));
     }
     this.broadcast("measure", this.measureRows());
@@ -678,7 +684,8 @@ export class ScopeService {
       return p ? (d / p) * 360 : null;
     }
     const m = measureAll(a.volts, dt);
-    const v = m[s.item] ?? null;
+    const def = this.reg.measurements.find((x) => x.item === s.item);
+    const v = m[def?.cross ?? s.item] ?? null;
     if (v !== null && (s.item === "TVMAX" || s.item === "TVMIN")) return v + a.pre.xorigin;
     return v;
   }
@@ -694,22 +701,17 @@ export class ScopeService {
 
   async screenshot(): Promise<Uint8Array> {
     this.need();
-    return this.scpi.queryBlock(":DISPlay:DATA? PNG");
+    return this.scpi.exclusive(() => this.drv.screenshot());
   }
 
   async setupBlob(): Promise<Uint8Array> {
     this.need();
-    return this.scpi.queryBlock(":SYSTem:SETup?");
+    return this.drv.setupBlob();
   }
 
   async restoreSetup(blob: Uint8Array): Promise<{ errors: { code: number; message: string }[] }> {
     this.need();
-    const head = new TextEncoder().encode(`:SYSTem:SETup #9${String(blob.length).padStart(9, "0")}`);
-    const msg = new Uint8Array(head.length + blob.length + 1);
-    msg.set(head, 0);
-    msg.set(blob, head.length);
-    msg[msg.length - 1] = 0x0a;
-    await this.scpi.writeBytes(msg, `:SYSTem:SETup #9… (${blob.length} bytes)`);
+    await this.drv.restoreSetup(blob);
     await sleep(1000);
     await this.scpi.query("*OPC?", 15000).catch(() => "");
     const errors = await this.drainErrors();
@@ -728,7 +730,7 @@ export class ScopeService {
     let block: { bytes: number; text: string | null; hex: string } | null = null;
     if (c.includes("?")) {
       // Long only for commands that return data blocks; a mistyped query should come back quickly.
-      const slow = /DATA\?|SETup\?|IMAGe|EEXPort/i.test(c);
+      const slow = this.drv.slowQuery(c);
       const r = await this.scpi.queryAny(c, slow ? C.instrument.block_timeout_ms : C.instrument.console_timeout_ms).catch((e) => {
         if (e instanceof ScpiError && e.code === "ENOREPLY") return null;
         throw e;
@@ -757,6 +759,7 @@ export class ScopeService {
 
   async syncClock(): Promise<{ date: string; time: string }> {
     this.need();
+    this.offered("clock", "Setting the clock");
     const d = new Date();
     const date = `${d.getFullYear()},${d.getMonth() + 1},${d.getDate()}`;
     const time = `${d.getHours()},${d.getMinutes()},${d.getSeconds()}`;
@@ -769,6 +772,7 @@ export class ScopeService {
   /** A multi-argument setting the generic panels cannot express (logic channel on/off and labels). */
   async digital(ch: number, patch: { enable?: boolean; label?: string }): Promise<{ enable: boolean | null; label: string | null }> {
     this.need();
+    this.offered("decode", "Logic channels");
     if (!(ch >= 0 && ch < C.instrument.digital_channels)) throw new HttpError(400, "digital channel 0–15");
     if (patch.enable !== undefined) await this.scpi.write(`:LA:DIGital:ENABle D${ch},${patch.enable ? 1 : 0}`);
     if (patch.label !== undefined) await this.scpi.write(`:LA:DIGital:LABel D${ch},${encode(patch.label.slice(0, 16), "string")}`);
@@ -780,8 +784,14 @@ export class ScopeService {
 
   async busTable(n: number): Promise<{ protocol: string; header: string[]; rows: string[][] }> {
     this.need();
+    this.offered("decode", "Bus decoding");
     const data = await this.scpi.queryBlock(`:BUS${n}:DATA?`);
     return parseBusTable(new TextDecoder().decode(data));
+  }
+
+  /** Refuse a feature the instrument on the line does not have. */
+  offered(f: keyof Registry["features"], what: string): void {
+    if (!this.reg.features[f]) throw new HttpError(400, `${what} is not offered for ${this.link.idn?.model ?? "this instrument"}`);
   }
 
   /** Pause the live loop for a long job; the lock makes a second job fail fast instead of queueing. */

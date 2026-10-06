@@ -16,9 +16,10 @@ export function InstrumentView() {
   const [name, setName] = useState("");
   const file = useRef<HTMLInputElement>(null);
   const connected = link?.state === "connected";
+  const lecroy = link?.family === "lecroy";
   useEffect(() => {
-    if (connected) void readGroup("system").catch(() => {});
-  }, [connected]);
+    if (connected && !lecroy) void readGroup("system").catch(() => {});
+  }, [connected, lecroy]);
   return (
     <>
       <div className="toolbar">
@@ -33,14 +34,20 @@ export function InstrumentView() {
               <div className="hero">{link?.idn?.model ?? "—"}<small>{link?.sim ? "simulated" : link?.idn?.vendor}</small></div>
               <div className="metric-row"><span>Serial</span><strong>{link?.idn?.serial}</strong></div>
               <div className="metric-row"><span>Firmware</span><strong>{link?.idn?.firmware}</strong></div>
+              <div className="metric-row"><span>Driver</span><strong>{lecroy ? "Teledyne LeCroy X-Stream (VICP)" : "RIGOL MHO900"}</strong></div>
               <Ctl id="system.version" label="SCPI version" />
               {link?.modelWarning && <p className="body-text" style={{ color: "var(--gold)" }}>{link.modelWarning}</p>}
-              <div className="section-title" style={{ marginTop: 12 }}>Options (:SYSTem:OPTion:STATus?)</div>
-              <div className="opt-grid">
-                {C.instrument.options.map((o) => (
-                  <div key={o} className="opt"><span className="mono">{o}</span><span className={`badge ${options[o] ? "ok" : "neutral"}`}>{options[o] ? "installed" : "no"}</span></div>
-                ))}
-              </div>
+              {!lecroy && (
+                <>
+                  <div className="section-title" style={{ marginTop: 12 }}>Options (:SYSTem:OPTion:STATus?)</div>
+                  <div className="opt-grid">
+                    {C.instrument.options.map((o) => (
+                      <div key={o} className="opt"><span className="mono">{o}</span><span className={`badge ${options[o] ? "ok" : "neutral"}`}>{options[o] ? "installed" : "no"}</span></div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {lecroy && <p className="body-text">Installed options are listed on the instrument (Utilities → Utilities Setup → Options). Anything the app has no panel for can be reached from the console with a VBS line.</p>}
             </div>
           </div>
           <div className="card">
@@ -53,10 +60,18 @@ export function InstrumentView() {
               <div className="metric-row"><span>Screens read</span><strong>{stats?.frames ?? 0} · {stats?.fps.toFixed(1) ?? "0"}/s</strong></div>
               <div className="metric-row"><span>Commands</span><strong>{stats?.commands ?? 0}</strong></div>
               <div className="metric-row"><span>Received</span><strong>{fmt(stats?.bytesIn ?? 0, "B", 3)}</strong></div>
-              <div className="metric-row"><span>WORD byte order</span><strong>{link?.wordOrder} {link?.wordOrderLocked ? <span className="badge ok">measured</span> : <span className="badge warn">not yet measured</span>}</strong></div>
-              <p className="body-text">
-                {link?.kind === "usb" ? "Over USB the same SCPI travels in USB-TMC bulk transfers (USB488). " : ""}Waveforms are read as 16-bit words so all 12 bits survive. The guide does not state the byte order, so the app reads it from the data (the right order gives a smooth trace, the wrong one jumps by hundreds of codes) and locks it after three confident screens.
-              </p>
+              {lecroy ? (
+                <p className="body-text">
+                  Messages travel in VICP frames on port {C.lecroy.vicp_port}; each reply carries the number of the query it answers, so a late reply is recognised and dropped. Waveforms come as a WAVEDESC descriptor plus 16-bit little-endian words (CFMT DEF9,WORD,BIN; CORD LO); volts = VERTICAL_GAIN × code − VERTICAL_OFFSET. The live screen asks for every Nth point (about {C.lecroy.screen_points} per channel); Deep memory reads them all.
+                </p>
+              ) : (
+                <>
+                  <div className="metric-row"><span>WORD byte order</span><strong>{link?.wordOrder} {link?.wordOrderLocked ? <span className="badge ok">measured</span> : <span className="badge warn">not yet measured</span>}</strong></div>
+                  <p className="body-text">
+                    {link?.kind === "usb" ? "Over USB the same SCPI travels in USB-TMC bulk transfers (USB488). " : ""}Waveforms are read as 16-bit words so all 12 bits survive. The guide does not state the byte order, so the app reads it from the data (the right order gives a smooth trace, the wrong one jumps by hundreds of codes) and locks it after three confident screens.
+                  </p>
+                </>
+              )}
             </div>
           </div>
           <div className="card">
@@ -67,7 +82,7 @@ export function InstrumentView() {
                 <button className="btn primary" disabled={!name.trim()} type="submit">Save current</button>
               </form>
               <div style={{ marginTop: 8 }}>
-                {presets.length === 0 && <p className="body-text">None saved. A preset is the instrument's own :SYSTem:SETup? file, kept in {C.paths.presets_dir}.</p>}
+                {presets.length === 0 && <p className="body-text">None saved. A preset is the instrument's own setup file (:SYSTem:SETup? on a RIGOL, PNSU? on a LeCroy), kept in {C.paths.presets_dir}.</p>}
                 {presets.map((p) => (
                   <div key={p.name} className="metric-row">
                     <span>{p.name} <span className="muted">· {new Date(p.savedAt).toLocaleString()} · {p.model}</span></span>
@@ -91,6 +106,7 @@ export function InstrumentView() {
               </div>
             </div>
           </div>
+          {!lecroy && (
           <div className="card">
             <div className="card-head">System</div>
             <div className="card-body">
@@ -106,12 +122,24 @@ export function InstrumentView() {
               </div>
             </div>
           </div>
-          {([["autoset", "Autoset behaviour"], ["display", "Display"], ["lan", "LAN (read-only here)"]] as const).map(([g, t]) => (
+          )}
+          {!lecroy && ([["autoset", "Autoset behaviour"], ["display", "Display"], ["lan", "LAN (read-only here)"]] as const).map(([g, t]) => (
             <div className="card" key={g}>
               <div className="card-body"><GroupPanel group={g} title={t} /></div>
             </div>
           ))}
-          {link?.sim && (
+          {link?.sim && lecroy && (
+            <div className="card">
+              <div className="card-head">Simulated LeCroy</div>
+              <div className="card-body">
+                <p className="body-text" style={{ marginTop: 0 }}>
+                  A stand-in for an unknown X-Stream model: up to {fmt(C.lecroy.sim.max_sample_rate, "Sa/s", 3)}, 8-bit codes sent as 16-bit words. CH1: {fmt(C.lecroy.sim.ch1_sine_hz, "Hz", 3)} sine, {C.lecroy.sim.ch1_vpp} Vpp. CH2: {fmt(C.sim.clock_hz, "Hz", 3)} {C.sim.clock_v} V clock with ringing. CH3: {fmt(C.lecroy.sim.ch3_square_hz, "Hz", 3)} square. CH4: UART. Noise ≈ {fmt(C.lecroy.sim.noise_vrms, "V", 2)} rms.
+                </p>
+                <p className="body-text">Modelled: VICP framing and sequence numbers, CHDR, the channel/timebase/trigger commands the app uses, WFSU sparsing and chunked reads, WAVEDESC, PAVA, CMR/EXR/INR, SCDP, PNSU, a few VBS properties, and silence plus a CMR error for unknown queries. Not modelled: everything else a real X-Stream scope does — math, zoom, other trigger types, sequence mode, RIS — and its real timing.</p>
+              </div>
+            </div>
+          )}
+          {link?.sim && !lecroy && (
             <div className="card">
               <div className="card-head">Simulated bench</div>
               <div className="card-body">
@@ -128,7 +156,7 @@ export function InstrumentView() {
               <p className="body-text" style={{ marginTop: 0 }}>Each asks first. Save a preset before a factory reset.</p>
               <div className="row wrap">
                 <button className="btn small danger" onClick={() => void attempt(() => action("common.rst"), "Factory setup restored")}>Factory reset (*RST)</button>
-                <button className="btn small danger" onClick={() => void attempt(() => action("system.reset"))}>Restart instrument</button>
+                {!lecroy && <button className="btn small danger" onClick={() => void attempt(() => action("system.reset"))}>Restart instrument</button>}
               </div>
             </div>
           </div>

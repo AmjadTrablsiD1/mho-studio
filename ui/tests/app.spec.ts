@@ -3,9 +3,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { foldProbe, clippedElements, pageScrolls } from "./foldProbe.mjs";
 
-const shots = new URL("./screenshots/", import.meta.url).pathname;
+// fileURLToPath, not URL.pathname: on Windows the latter is "/C:/…", which is not a path.
+const shots = fileURLToPath(new URL("./screenshots/", import.meta.url));
 mkdirSync(shots, { recursive: true });
 
 async function api(page: Page, path: string, data: unknown = {}) {
@@ -248,5 +250,51 @@ test("connect screen: LAN, USB and simulator tabs; USB lists what is plugged in"
   await expect(page.locator(".toast.error")).toContainText(/No RIGOL or USB-TMC instrument is connected by USB/);
   await page.getByTestId("tab-sim").click();
   await page.getByTestId("use-sim").click();
+  await expect(page.getByTestId("link-pill")).toContainText("MHO984");
+});
+
+test("LeCroy: the simulated X-Stream over VICP — traces, family-only views, console, accessible", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  await open(page, theme);
+  await api(page, "disconnect");
+  await expect(page.getByTestId("connect-card")).toBeVisible();
+  await page.getByTestId("tab-lan").click();
+  await page.getByTestId("brand-lecroy").click();
+  await expect(page.locator("#port")).toHaveValue("1861");
+  await expect(page.getByTestId("connect-card")).toContainText("TCPIP (VICP)");
+  await page.getByTestId("tab-sim").click();
+  await page.getByTestId("use-sim-lecroy").click();
+  try {
+    await expect(page.getByTestId("link-pill")).toContainText("WM8ZI-A");
+    await expect(page.getByTestId("legend")).toContainText("100 mV/div");
+    await expect.poll(() => tracePixels(page, "ch1")).toBeGreaterThan(400);
+    await expect.poll(() => tracePixels(page, "ch2")).toBeGreaterThan(200);
+    // A LeCroy has no built-in generator or bus decoder: those views and sections are not offered.
+    await expect(page.getByTestId("nav-bode")).toHaveCount(0);
+    await expect(page.getByTestId("nav-decode")).toHaveCount(0);
+    await expect(page.getByTestId("sec-generator")).toHaveCount(0);
+    // Name a channel: it shows in the app and is sent to the scope (LabelsText, ViewLabels on).
+    await page.getByTestId("sec-vertical").click();
+    await page.getByRole("textbox", { name: "Name", exact: true }).fill("VIN");
+    await page.getByRole("textbox", { name: "Name", exact: true }).press("Enter");
+    await expect(page.getByTestId("legend")).toContainText("CH1 · VIN");
+    await expect(page.getByTestId("chan-name-1")).toHaveText("VIN");
+    // Trigger types from the automation manual, each with its own fields.
+    await page.getByTestId("sec-trigger").click();
+    await page.getByRole("combobox", { name: "Trigger type" }).selectOption("Width");
+    await expect(page.locator(".inspector")).toContainText("Lower limit");
+    await page.getByRole("combobox", { name: "Trigger type" }).selectOption("Logic");
+    await expect(page.locator(".inspector")).toContainText("CH4 threshold");
+    await page.getByRole("combobox", { name: "Trigger type" }).selectOption("Edge");
+    await page.screenshot({ path: `${shots}lecroy-${theme}.png` });
+    await axe(page, "lecroy scope");
+    await page.getByTestId("nav-console").click();
+    const box = page.getByRole("textbox", { name: "SCPI command" });
+    await box.fill("VBS? 'return=app.Acquisition.Horizontal.SamplingRate'");
+    await box.press("Enter");
+    await expect(page.locator("main")).toContainText("40000000000");
+  } finally {
+    await api(page, "connect", { sim: true, simModel: "rigol" });
+  }
   await expect(page.getByTestId("link-pill")).toContainText("MHO984");
 });

@@ -11,10 +11,13 @@ import { WINDOW_LABELS, type WindowName } from "../../../core/src/dsp/window.ts"
 import { attempt, get, onFrame, useLive } from "../api.ts";
 import { Plot } from "../charts/Plot.tsx";
 import { sourceColor, sourceLabel, token } from "../theme.ts";
+import { useReg } from "../registry.ts";
 
 type Result = { df: number; db: number[]; peaks: Peak[]; harm: Harmonics | null; points: number; rbw: number; from: "screen" | "deep" };
 
 export function SpectrumView() {
+  const { screenPoints, family } = useReg();
+  const lecroy = family === "lecroy";
   const values = useLive((s) => s.values);
   const deep = useLive((s) => s.deep);
   const sources = useMemo(() => {
@@ -141,7 +144,7 @@ export function SpectrumView() {
                 <div className="metric-row"><span>Points</span><strong>{res ? res.points.toLocaleString() : "—"}</strong></div>
                 <div className="metric-row"><span>Bin spacing</span><strong>{fmt(res?.df, "Hz", 3)}</strong></div>
                 <div className="metric-row"><span>RBW (window ENBW)</span><strong>{fmt(res?.rbw, "Hz", 3)}</strong></div>
-                <p className="body-text">Zero-padded to a power of two. Levels are RMS per bin, corrected for the window's coherent gain; THD sums the power in each harmonic's main lobe up to H{C.spectrum.harmonics}. A screen record has only {C.instrument.normal_points} points — capture deep memory for resolution below {res ? fmt(res.df, "Hz", 2) : "a bin"}.</p>
+                <p className="body-text">Zero-padded to a power of two. Levels are RMS per bin, corrected for the window's coherent gain; THD sums the power in each harmonic's main lobe up to H{C.spectrum.harmonics}. A screen record has only {screenPoints} points — capture deep memory for resolution below {res ? fmt(res.df, "Hz", 2) : "a bin"}.{lecroy ? " On a LeCroy the screen record is every Nth point of the acquisition, without a filter: anything above half that reduced rate folds back (aliases) into this screen spectrum. Deep memory has every point." : ""}</p>
               </div>
             </div>
           </div>

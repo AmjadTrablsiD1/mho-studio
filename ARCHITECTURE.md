@@ -29,6 +29,12 @@ It talks to the scope over LAN (raw SCPI on TCP port 5555) or USB (USB-TMC on
 the rear USB Device port). No VISA, no Python; the only native code is the
 optional prebuilt `usb` package.
 
+Since 0.2 it also drives **Teledyne LeCroy X-Stream** oscilloscopes (Windows
+based, about 2004 on) over **VICP** on TCP port 1861. The model the user will
+connect is not known, so the LeCroy side keeps to what every X-Stream model
+documents and learns what a given one does not answer. See "Families and
+drivers" below.
+
 ## Layers
 
 ```
@@ -37,24 +43,27 @@ ui/      React 19 + Vite. Chrome, the scope canvas, plots, generic control widge
   │ HTTP (JSON) + Server-Sent Events, 127.0.0.1 only, per-launch token
   ▼
 server/  Node 22.18+, TypeScript run directly (type stripping). Owns the link:
-  │      transport.ts (TCP, with the macOS nc fallback) or usbtmc.ts (USB-TMC
-  │      as a Duplex stream), scpi.ts (framing, strict request/reply, exclusive
-  │      sections), scope.ts
-  │      (value mirror, live loop, measurements), deep.ts, bode.ts, discover.ts,
-  │      store.ts (settings + presets), main.ts (routes only).
+  │      transport.ts (TCP, with the macOS nc fallback), usbtmc.ts (USB-TMC
+  │      as a Duplex stream) or vicp.ts (LeCroy VICP), scpi.ts (framing, strict
+  │      request/reply, exclusive sections), scope.ts (value mirror, live loop,
+  │      measurements) with drivers/rigol.ts or drivers/lecroy.ts for what
+  │      differs by brand, deep.ts, bode.ts, discover.ts, store.ts (settings +
+  │      presets), main.ts (routes only).
   │ imports                                  ┌──────────────────────────────┐
-  ▼                                          │ sim/  the simulated MHO984:  │
+  ▼                                          │ sim/  the simulated MHO984 + │
 core/    Pure TypeScript. No DOM, no node:   │ instrument.ts (dispatcher on │
          imports, no I/O.                    │ the registry), bench.ts      │
            scpi/     header forms, value     │ (signals), png.ts, server.ts │
-                     encode/parse, #N blocks,│ (TCP 5555-style)             │
-                     USB-TMC headers
+                     encode/parse, #N blocks,│ (TCP 5555-style); lecroy.ts, │
+                     USB-TMC headers, VICP,  │ lecroy-server.ts (VICP 1861) │
+                     LeCroy replies + WAVEDESC
            wave/     preamble → volts, word  └──────────────────────────────┘
                      order, 1-2-5 knobs, offset limits
            dsp/      FFT, windows, spectrum/THD, measurements, lock-in,
                      Bode maths, min/max decimation
            registry/ manual.json (generated from the guide), controls.ts
-                     (curation), labels.ts, measurements.ts
+                     (curation), labels.ts, measurements.ts; lecroy.ts (the
+                     LeCroy table), families.ts (which table, which features)
 shared/  constants.json (rule 11) and themes.json (rule 1).
 ```
 
@@ -105,7 +114,54 @@ console's completion.
    animation frame, mapping time with the preamble and volts with the mirrored
    V/div and offset.
 
-## The two links
+## Families and drivers
+
+`*IDN?` decides (`core/src/registry/families.ts → familyOf`): a LeCroy vendor
+string selects the LeCroy driver, anything else the RIGOL one. A **driver**
+(`server/drivers/types.ts`) owns only what differs between brands:
+
+| | RIGOL (`drivers/rigol.ts`) | LeCroy (`drivers/lecroy.ts`) |
+|---|---|---|
+| Link | raw SCPI lines, or USB-TMC | VICP frames (`server/vicp.ts`) |
+| Commands | rendered from the guide's header | per-control templates `q` / `w` (`C<n>`, `{v}`, `{src}`) |
+| Replies | short-form enums, NR3 | `CHDR OFF`, units after a space, `MA` = mega, multi-field picks |
+| Errors | `:SYSTem:ERRor?` queue | `CMR?` and `EXR?` registers |
+| Trigger status | `:TRIGger:STATus?` | `TRMD?` + `INR?` bit 0 |
+| Screen record | `:WAV:MODE NORM`, 1000 pts | `WFSU SP,N` (every Nth point, ~2000), `C1:WF? ALL` |
+| Waveform format | preamble + WORD codes | WAVEDESC (346 bytes) + int16; mapped onto the same preamble |
+| Deep memory | `:WAV:MODE RAW`, STARt/STOP | `WFSU NP,FP` chunks |
+| Measurements | `:MEASure:ITEM` slots | `C1:PAVA? <name>` on demand |
+| Screenshot / setup | `:DISPlay:DATA? PNG` / `:SYSTem:SETup?` | `HCSU` + `SCDP` (raw image) / `PNSU?` |
+
+Everything else is shared: the value mirror, read-back after writes, the live
+loop, learning unanswered queries per model and firmware, deep memory, the DSP,
+the whole UI. Common quantities use **the same control ids in both registries**
+(`channel.scale`, `trigger.edge.level`, …), so the screen, the inspector and
+the run keys need no family checks. Views and inspector sections that need a
+feature (`Features` in `families.ts`: generator, decode, math, counter…) are
+hidden when the family lacks it; a `<Ctl id>` the active registry lacks renders
+nothing.
+
+LeCroy controls are of two kinds: legacy remote-control commands (C1:VDIV,
+TDIV, TRMD, MSIZ…) where they are universal, and **automation properties** read
+and written through VBS (`VBS? 'return=app.Acquisition.Trigger.Type'`,
+`VBS 'app.Acquisition.C1.LabelsText = "VIN"'`) for everything else — trigger
+types and their fields, channel names, bandwidth limit, sampling mode. Names,
+types and values are those of LeCroy's X-Stream automation manual of June 2003
+(WaveMaster / WavePro 7000), the first X-Stream generation, so they should hold
+on any later model. A control can carry `then` writes (setting a channel name
+also switches its label on). The LeCroy simulator answers the same properties
+from a store generated from this registry (`sim/lecroy.ts → vbsSpecs`).
+
+On a LeCroy the screen centre is not a setting: the driver derives it from each
+record (HORIZ_OFFSET + half the span) and the T marker does not drag.
+`timebase.delay` (HorOffset: seconds, positive moves the trigger right) moves it;
+dragging the T marker writes it once, on release. Whether a sparsed descriptor's
+HORIZ_INTERVAL already includes the sparsing factor is not stated clearly in
+what we have; `pointInterval()` picks the reading that makes the record span
+10 × TDIV.
+
+## The links
 
 `server/scpi.ts` only needs a byte stream (a Node `Duplex`): SCPI text and #N
 blocks out, the same back. Over LAN that is the TCP socket. Over USB it is
@@ -123,6 +179,16 @@ INITIATE_CLEAR so nothing a previous session left is taken as an answer.
 Tests run the complete service over `server/test/virtual-usbtmc.ts`: the
 simulator behind real USB-TMC framing, with replies split into small
 transfers, a no-EOM mode and unplugging.
+
+**VICP** (`core/src/scpi/vicp.ts`, `server/vicp.ts`): every message written goes
+out with an 8-byte header (DATA|EOI|REMOTE, version 1, sequence number,
+big-endian length). Replies are reassembled until EOI and handed to the client
+whole (`"reply"` events → `ReplyReader.pushReply`), so a reply is never framed
+by guessing at newlines: a message holding an IEEE block becomes that block, a
+screen dump (raw image bytes) becomes bytes, text becomes a line. The
+instrument echoes the sequence number of the query it answers; a reply with an
+older number belongs to a query the client gave up on and is dropped, which
+makes a missing reply cost only itself.
 
 ## Data flow — one write
 
@@ -153,7 +219,7 @@ written back at the end, generator output last.
 | State | Home | Survives restart? |
 |---|---|---|
 | Instrument settings | the instrument; the server mirrors what it read back | on the device |
-| Last address, recent addresses, sim or not | `~/.config/mho-studio/settings.json` | yes |
+| Last address, protocol (raw/VICP), recent addresses, which simulator | `~/.config/mho-studio/settings.json` | yes |
 | Presets (instrument setup files) | `~/.config/mho-studio/presets/*.setup` + `.json` | yes |
 | Deep capture | server memory, 16-bit codes (50 MB per 25 Mpt channel) | no |
 | Measurement slots and statistics | server memory | no |
@@ -184,6 +250,17 @@ tests (the registry test checks ids, `when` and `after` references), diff
 
 **Something the simulator should model**: `sim/instrument.ts → special()` for a
 query with behaviour, `sim/bench.ts` for a signal; list it in `sim/README.md`.
+For the LeCroy simulator, `sim/lecroy.ts → one()`.
+
+**LeCroy setting**: an entry in `core/src/registry/lecroy.ts` with `q` and `w`
+templates (and `pick` if the reply has several fields); use an existing RIGOL
+id if it is the same quantity, so existing panels show it. If the simulator
+should answer it, add it to `sim/lecroy.ts`.
+
+**Another family** (Keysight, Tektronix, Siglent, R&S…): a registry in
+`core/src/registry/`, an entry in `families.ts` (`familyOf`, `Features`), a
+driver implementing `server/drivers/types.ts`, and a simulator so it can be
+tested. The UI follows from the registry and the features.
 
 ## Security posture
 
@@ -213,3 +290,8 @@ query with behaviour, `sim/bench.ts` for a signal; list it in `sim/README.md`.
 | App-driven Bode with lock-in phasors | The instrument's Bode curve cannot be read over SCPI; phasors avoid the guide's undefined phase-measurement sign | :MEASure:ITEM? RRPHase per point |
 | Canvas 2D for the screen | 4 × 1000 points at 25 fps is trivial for 2D; crisp lines, no WebGL context loss | Three.js/WebGL |
 | Simulator as a TCP server using the same registry | The app runs identically on sim and hardware; tests exercise the real transport | Mocking at the service layer |
+| One app with a driver per family, chosen from *IDN? | The UI, DSP, deep memory and robustness work are brand-independent; only commands and formats differ | A separate app per brand; one "generic SCPI" layer (brands do not share commands) |
+| LeCroy over VICP, implemented in TypeScript | Every X-Stream scope has it, old ones included; it is 8 bytes of header; sequence numbers drop late replies | VXI-11 (only newer firmware); LeCroy's ActiveDSO/VISA (Windows COM, not macOS) |
+| LeCroy commands: legacy set + automation properties from the 2003 manual | Model unknown: the first X-Stream generation's properties hold on later models; unanswered ones are learned | Generating a registry from one newer model's automation tree (would not match the model he gets) |
+| Windows: PowerShell installer + shortcut to node.exe, CI on a Windows runner | No Windows machine here; Node and the app are cross-platform, so the risk is in the OS glue, which CI exercises | Electron/MSI packaging (large, and still untestable here) |
+| LeCroy live screen sparsed, deep memory whole | A 40 GS/s record is millions of points; the screen needs ~2000 | Reading every point each frame (seconds per screen) |

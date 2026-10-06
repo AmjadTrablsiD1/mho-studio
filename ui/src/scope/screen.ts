@@ -67,8 +67,9 @@ export function mapping(g: Geometry, values: Record<string, Value>) {
 }
 
 export function triggerChannel(values: Record<string, Value>): number | null {
-  const m = /(\d)$/.exec(String(values["trigger.edge.source"] ?? ""));
-  return m && /^CHAN/i.test(String(values["trigger.edge.source"])) ? Number(m[1]) : null;
+  // "CHANnel2" on a RIGOL, "C2" on a LeCroy.
+  const m = /^(?:CHAN(?:nel)?|C)(\d)$/i.exec(String(values["trigger.edge.source"] ?? ""));
+  return m ? Number(m[1]) : null;
 }
 
 function drawGrid(ctx: CanvasRenderingContext2D, g: Geometry): void {

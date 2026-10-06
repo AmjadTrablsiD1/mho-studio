@@ -15,6 +15,7 @@ type Measured = Record<string, number | null>;
 const DEPTHS = [100_000, 1_000_000, 5_000_000, 10_000_000, 25_000_000];
 
 export function DeepView() {
+  const lecroy = useLive((s) => s.link?.family === "lecroy");
   const meta = useLive((s) => s.deep);
   const progress = useLive((s) => s.deepProgress);
   const busy = useLive((s) => s.busy);
@@ -120,7 +121,7 @@ export function DeepView() {
               !capturing && (
                 <div className="empty">
                   <h3>No capture yet</h3>
-                  <p>Stops the scope and reads every point of the acquisition memory (RAW mode, in chunks of {fmt(C.instrument.raw_chunk_points, "pts", 3)}), then lets you zoom, measure and export it here. A 25 Mpt channel is 50 MB over the LAN.</p>
+                  <p>Stops the scope and reads every point of the acquisition memory (in chunks of {fmt(lecroy ? C.lecroy.deep_chunk_points : C.instrument.raw_chunk_points, "pts", 3)}{lecroy ? ", WFSU first point / number of points" : ", RAW mode"}), then lets you zoom, measure and export it here. A 25 Mpt channel is 50 MB over the LAN.</p>
                 </div>
               )
             )}

@@ -20,13 +20,16 @@ import { DecodeView } from "./views/DecodeView.tsx";
 import { ConsoleView } from "./views/ConsoleView.tsx";
 import { InstrumentView } from "./views/InstrumentView.tsx";
 import { SettingsView } from "./views/SettingsView.tsx";
+import { useReg } from "./registry.ts";
+import type { Features } from "../../core/src/registry/families.ts";
 
-const VIEWS: { id: View; label: string; icon: () => React.JSX.Element }[] = [
+/** `needs`: shown only when the instrument on the line has that feature (no Bode sweep without a generator). */
+const VIEWS: { id: View; label: string; icon: () => React.JSX.Element; needs?: keyof Features }[] = [
   { id: "scope", label: "Scope", icon: Icon.scope },
   { id: "spectrum", label: "Spectrum", icon: Icon.spectrum },
-  { id: "bode", label: "Bode sweep", icon: Icon.bode },
+  { id: "bode", label: "Bode sweep", icon: Icon.bode, needs: "generator" },
   { id: "deep", label: "Deep memory", icon: Icon.deep },
-  { id: "decode", label: "Decode & logic", icon: Icon.decode },
+  { id: "decode", label: "Decode & logic", icon: Icon.decode, needs: "decode" },
   { id: "console", label: "SCPI console", icon: Icon.console },
   { id: "instrument", label: "Instrument", icon: Icon.instrument },
   { id: "settings", label: "All settings", icon: Icon.settings },
@@ -109,6 +112,9 @@ export function App() {
 }
 
 function ViewHost({ view }: { view: View }) {
+  const r = useReg();
+  const needs = VIEWS.find((v) => v.id === view)?.needs;
+  if (needs && !r.features[needs]) return <ScopeView />;
   switch (view) {
     case "spectrum": return <SpectrumView />;
     case "bode": return <BodeView />;
@@ -167,7 +173,7 @@ function Header({ onLink, onShot }: { onLink: () => void; onShot: () => void }) 
         <button className="runkey" disabled={!connected} onClick={() => void attempt(() => action("root.autoset"))} title="Autoset (A)">AUTO</button>
         <button className="runkey" disabled={!connected} onClick={() => void attempt(() => action("root.tforce"))} title="Force trigger (F)">FORCE</button>
       </div>
-      <span className={`pill trig-state ${stateClass}`} data-test="trig-status" title="Trigger status (:TRIGger:STATus?)">
+      <span className={`pill trig-state ${stateClass}`} data-test="trig-status" title={link?.family === "lecroy" ? "Trigger status (TRMD? and INR?)" : "Trigger status (:TRIGger:STATus?)"}>
         {connected ? (C.instrument.trigger_status as Record<string, string>)[status] ?? status : "—"}
       </span>
       <button className="icon-btn" aria-label="Screenshot of the instrument's display" title="Screenshot of the instrument's display" disabled={!connected} onClick={onShot}><Icon.camera /></button>
@@ -196,10 +202,11 @@ function Rail() {
   const measure = useLive((s) => s.measure.length);
   const readings = useLive((s) => s.readings);
   const bode = useLive((s) => s.bode);
+  const r = useReg();
   return (
     <nav className="rail" aria-label="Views and channels">
       <div className="eyebrow">Views</div>
-      {VIEWS.map((v) => (
+      {VIEWS.filter((v) => !v.needs || r.features[v.needs]).map((v) => (
         <button key={v.id} className={`nav-item${view === v.id ? " active" : ""}`} onClick={() => setUi({ view: v.id })} data-test={`nav-${v.id}`}>
           <v.icon />
           {v.label}
@@ -217,19 +224,22 @@ function Rail() {
             const bw = String(values[key("channel.bwlimit", n)] ?? "OFF");
             const imp = String(values[key("channel.impedance", n)] ?? "");
             const probe = values[key("channel.probe", n)];
+            const name = String(values[key("channel.label.content", n)] ?? "").trim();
             const s = typeof scale === "number" ? fmt(scale, "V", 3).split(" ") : ["—", ""];
             return (
               <div key={n} className={`chan-card${selected === n ? " selected" : ""}${on ? "" : " off"}`} data-test={`chan-${n}`}>
                 <span className="bar" style={{ background: `var(--ch${n})` }} />
                 <button style={{ textAlign: "left" }} onClick={() => setUi({ channel: n, section: "vertical", view: getUi().view === "scope" || getUi().view === "spectrum" ? getUi().view : "scope" })} aria-label={`Select channel ${n}`}>
                   <span className="c-name" style={{ color: `var(--ch${n})` }}>CH{n}</span>
+                  {name && <span className="muted" title={name} style={{ fontSize: 10, marginLeft: 6, maxWidth: 70, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "inline-block", verticalAlign: "bottom" }} data-test={`chan-name-${n}`}>{name}</span>}
                 </button>
                 <div className="row" style={{ gap: 6 }}>
                   <span className="c-scale">{s[0]}<small>{s[1]}/div</small></span>
                   <button className="switch" role="switch" aria-checked={on} aria-label={`CH${n} on`} onClick={() => void attempt(() => writeControl(key("channel.display", n), !on))} />
                 </div>
                 <div className="c-tags">
-                  {coup && <span className="tag">{coup === "DC" ? "DC" : coup === "AC" ? "AC" : "GND"}</span>}
+                  {coup && <span className="tag">{coup === "DC" || coup === "D1M" ? "DC" : coup === "AC" || coup === "A1M" ? "AC" : coup === "D50" ? "DC" : "GND"}</span>}
+                  {coup === "D50" && <span className="tag" style={{ color: "var(--gold)" }}>50Ω</span>}
                   {bw !== "OFF" && <span className="tag">BW {bw}</span>}
                   {imp.startsWith("FIF") && <span className="tag" style={{ color: "var(--gold)" }}>50Ω</span>}
                   {typeof probe === "number" && probe !== 1 && <span className="tag">{probe}×</span>}
@@ -239,8 +249,8 @@ function Rail() {
           })}
           <div className="rail-card">
             <div className="r"><span>Sample rate</span><span>{fmt(values["acquire.srate"] as number, "Sa/s", 3)}</span></div>
-            <div className="r"><span>Memory</span><span>{String(values["acquire.mdepth"] ?? "—")}</span></div>
-            <div className="r"><span>Acquire</span><span>{String(values["acquire.type"] ?? "—").replace("NORMal", "Normal")}</span></div>
+            <div className="r"><span>Memory</span><span>{typeof values["acquire.mdepth"] === "number" ? fmt(values["acquire.mdepth"], "pts", 3) : String(values["acquire.mdepth"] ?? "—")}</span></div>
+            <div className="r"><span>Acquire</span><span>{String(values["acquire.type"] ?? values["acquire.mode"] ?? "—").replace("NORMal", "Normal")}</span></div>
             {readings.counter !== null && <div className="r"><span>Counter</span><span>{fmt(readings.counter, String(values["counter.mode"] ?? "").startsWith("PER") ? "s" : "Hz", 6)}</span></div>}
             {readings.dvm !== null && <div className="r"><span>DVM</span><span>{fmt(readings.dvm, "V", 4)}</span></div>}
           </div>
@@ -264,7 +274,7 @@ function StatusBar() {
           <span>link <strong>{link.transport ?? "tcp"}</strong> {linkAddress(link)}</span>
           {stats && <span>round trip <strong>{stats.rttMs === null ? "—" : `${stats.rttMs.toFixed(1)} ms`}</strong></span>}
           {stats && <span><strong>{stats.fps.toFixed(1)}</strong> screens/s</span>}
-          <span title="WORD byte order is detected from the data (see Instrument)">word <strong>{link.wordOrder}{link.wordOrderLocked ? "" : "?"}</strong></span>
+          {link.family === "rigol" && <span title="WORD byte order is detected from the data (see Instrument)">word <strong>{link.wordOrder}{link.wordOrderLocked ? "" : "?"}</strong></span>}
         </>
       )}
       {problem && <span style={{ color: "var(--gold)" }}>{problem}</span>}

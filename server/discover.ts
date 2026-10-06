@@ -5,6 +5,7 @@
 //    with self-assigned 169.254.x.x addresses, where a scan is hopeless (/16);
 //  • the ARP table: hosts this computer has recently exchanged packets with.
 // Each candidate is probed on the SCPI port; whatever answers *IDN? is listed.
+// On port 1861 the question goes in a VICP frame, the way a LeCroy expects it.
 
 import net from "node:net";
 import dgram from "node:dgram";
@@ -12,14 +13,18 @@ import { execFile } from "node:child_process";
 import { networkInterfaces } from "node:os";
 import { C } from "../core/src/constants.ts";
 import { parseIdn } from "../core/src/scpi/values.ts";
+import { lecroyIdn } from "../core/src/scpi/lecroy.ts";
+import { replyOfMessage, vicpMessage, VicpFramer } from "../core/src/scpi/vicp.ts";
+import { protocolForPort, type Protocol } from "../core/src/registry/families.ts";
 
 export type Found = { host: string; port: number; idn: string; model: string; serial: string; ms: number; via: string };
 
-function probe(host: string, port: number, timeoutMs: number): Promise<Found | null> {
+export function probe(host: string, port: number, timeoutMs: number, protocol: Protocol = "raw"): Promise<Found | null> {
   return new Promise((resolve) => {
     const t0 = Date.now();
     const s = net.connect({ host, port });
     let buf = "";
+    const framer = new VicpFramer();
     const done = (v: Found | null) => {
       clearTimeout(timer);
       s.destroy();
@@ -30,9 +35,21 @@ function probe(host: string, port: number, timeoutMs: number): Promise<Found | n
     s.once("connect", () => {
       clearTimeout(timer);
       setTimeout(() => done(null), 1500);
-      s.write("*IDN?\n");
+      s.write(protocol === "vicp" ? vicpMessage(new TextEncoder().encode("*IDN?"), 1) : "*IDN?\n");
     });
     s.on("data", (d) => {
+      if (protocol === "vicp") {
+        let m;
+        try {
+          m = framer.push(new Uint8Array(d.buffer, d.byteOffset, d.length))[0];
+        } catch {
+          return done(null);
+        }
+        if (!m) return;
+        const r = replyOfMessage(m.data);
+        const id = lecroyIdn(r.kind === "line" ? r.text : "");
+        return done(id.vendor ? { host, port, idn: id.raw, model: id.model, serial: id.serial, ms: Date.now() - t0, via: "" } : null);
+      }
       buf += d.toString("latin1");
       if (buf.includes("\n")) {
         const id = parseIdn(buf.split("\n")[0]);
@@ -159,11 +176,11 @@ export function parseArp(text: string): string[] {
 
 function arpTable(): Promise<string[]> {
   return new Promise((resolve) => {
-    execFile(process.platform === "win32" ? "arp" : "/usr/sbin/arp", process.platform === "win32" ? ["-a"] : ["-an"], { timeout: 3000 }, (err, stdout) => resolve(err ? [] : parseArp(stdout)));
+    execFile(process.platform === "win32" ? "arp" : "/usr/sbin/arp", process.platform === "win32" ? ["-a"] : ["-an"], { timeout: 3000, windowsHide: true }, (err, stdout) => resolve(err ? [] : parseArp(stdout)));
   });
 }
 
-export async function discover(port: number = C.instrument.scpi_port, timeoutMs = 350, concurrency = 96): Promise<{ found: Found[]; scanned: string[] }> {
+export async function discover(port: number = C.instrument.scpi_port, protocol: Protocol = protocolForPort(port), timeoutMs = 350, concurrency = 96): Promise<{ found: Found[]; scanned: string[] }> {
   const nets = subnets();
   const via = new Map<string, string>();
   for (const n of nets) for (let i = 1; i < 255; i++) {
@@ -180,7 +197,7 @@ export async function discover(port: number = C.instrument.scpi_port, timeoutMs 
   const worker = async () => {
     while (next < hosts.length) {
       const h = hosts[next++];
-      const r = await probe(h, port, timeoutMs);
+      const r = await probe(h, port, timeoutMs, protocol);
       if (r) found.push({ ...r, via: via.get(h) ?? "" });
     }
   };

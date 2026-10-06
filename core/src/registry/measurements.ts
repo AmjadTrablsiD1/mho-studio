@@ -10,6 +10,8 @@ export type Measurement = {
   dual?: boolean;
   /** Measured in percent of amplitude or period. */
   percent?: boolean;
+  /** The app's own computation of the same quantity (a key of measureAll), when `item` is not one. */
+  cross?: string;
 };
 
 export const MEASUREMENTS: Measurement[] = [

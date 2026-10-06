@@ -49,6 +49,17 @@ export type Control = {
   help?: string;
   /** Instrument option this needs (from :SYSTem:OPTion:STATus?). */
   needs?: string;
+  /**
+   * Families whose commands do not follow `header` (LeCroy): the query and the
+   * set command as templates. "<n>" is the suffix, "{v}" the encoded value,
+   * "{src}" the current trigger source.
+   */
+  q?: string;
+  w?: string;
+  /** Which part of a multi-field reply holds the value: a field index, or the item after a token ("C<n>" in "C1,OFF,C2,ON"). */
+  pick?: number | string;
+  /** Also set these after a write (a LeCroy name is only seen once its label is switched on). */
+  then?: { id: string; value: string | number | boolean }[];
 };
 
 type Param = { name: string; type: string; options?: string[]; min?: number; max?: number; unit?: string; default?: string | number; range?: string };
@@ -348,9 +359,9 @@ export function keysOf(c: Control): string[] {
 }
 
 /** Is this control relevant given the current values (its `when` rule, bound to the same suffix)? */
-export function relevant(c: Control, n: number | null, get: (k: string) => unknown): boolean {
+export function relevant(c: Control, n: number | null, get: (k: string) => unknown, byId: Map<string, Control> = BY_ID): boolean {
   if (!c.when) return true;
-  const dep = BY_ID.get(c.when.id);
+  const dep = byId.get(c.when.id);
   const k = dep?.suffix ? key(c.when.id, n ?? 1) : c.when.id;
   const v = get(k);
   if (v === undefined || v === null) return true;
@@ -358,9 +369,9 @@ export function relevant(c: Control, n: number | null, get: (k: string) => unkno
   return c.when.is.some((x) => x.toUpperCase() === s.toUpperCase() || shortForm(x) === shortForm(s));
 }
 
-export function groups(): { group: string; subs: (string | null)[] }[] {
+export function groups(list: Control[] = CONTROLS): { group: string; subs: (string | null)[] }[] {
   const m = new Map<string, Set<string | null>>();
-  for (const c of CONTROLS) {
+  for (const c of list) {
     if (c.hidden) continue;
     if (!m.has(c.group)) m.set(c.group, new Set());
     m.get(c.group)!.add(c.sub);

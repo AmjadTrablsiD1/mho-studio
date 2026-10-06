@@ -4,7 +4,7 @@
 import { C } from "../../../core/src/constants.ts";
 import { key } from "../../../core/src/registry/controls.ts";
 import { fmt } from "../../../core/src/format.ts";
-import { MEASUREMENT_BY_ITEM } from "../../../core/src/registry/measurements.ts";
+import { useReg } from "../registry.ts";
 import { attempt, post, useLive } from "../api.ts";
 import { setUi, useUi, type CursorMode } from "../uistate.ts";
 import { ScopeScreen } from "../scope/ScopeScreen.tsx";
@@ -78,14 +78,14 @@ function Foot() {
   const v = useLive((s) => s.values);
   const stats = useLive((s) => s.stats);
   const src = String(v["trigger.edge.source"] ?? "");
-  const slope = String(v["trigger.edge.slope"] ?? "");
+  const slope = String(v["trigger.edge.slope"] ?? "").toUpperCase();
   const mode = String(v["trigger.mode"] ?? "");
   return (
     <div className="scope-foot" data-test="scope-foot">
       <span>H <b>{fmt(v["timebase.scale"] as number, "s", 3)}/div</b></span>
       <span>pos <b>{fmt(v["timebase.offset"] as number, "s", 3)}</b></span>
       <span><b>{fmt(v["acquire.srate"] as number, "Sa/s", 3)}</b></span>
-      <span>mem <b>{String(v["acquire.mdepth"] ?? "—")}</b></span>
+      <span>mem <b>{typeof v["acquire.mdepth"] === "number" ? fmt(v["acquire.mdepth"], "pts", 3) : String(v["acquire.mdepth"] ?? "—")}</b></span>
       <span>
         T <b>{mode.toUpperCase().startsWith("EDGE") ? `${sourceLabel(src)} ${slope.startsWith("POS") ? "↑" : slope.startsWith("NEG") ? "↓" : "↕"} ${fmt(v["trigger.edge.level"] as number, "V", 3)}` : mode}</b>
       </span>
@@ -98,6 +98,7 @@ function Foot() {
 
 function MeasureTable() {
   const rows = useLive((s) => s.measure);
+  const { measurements, screenPoints } = useReg();
   return (
     <div className="bottom">
       <div className="bottom-head">
@@ -115,7 +116,7 @@ function MeasureTable() {
           </thead>
           <tbody>
             {rows.map((r) => {
-              const m = MEASUREMENT_BY_ITEM.get(r.slot.item);
+              const m = measurements.find((x) => x.item === r.slot.item);
               const u = m?.unit ?? "";
               const cell = (x: number | null) => {
                 const f = fmt(x, u, 4).split(" ");
@@ -132,7 +133,7 @@ function MeasureTable() {
                   <td className="n">{cell(r.stats.max)}</td>
                   <td className="n">{cell(r.stats.std)}</td>
                   <td className="n">{r.stats.n}</td>
-                  <td className="n" title="Same quantity computed by MHO Studio from the screen record (1000 points); a large difference usually means too few points per edge">
+                  <td className="n" title={`Same quantity computed by MHO Studio from the screen record (${screenPoints} points); a large difference usually means too few points per edge`}>
                     {cell(r.cross)}
                     {dev !== null && <span className={`badge ${dev < 2 ? "ok" : dev < 10 ? "warn" : "alarm"}`} style={{ marginLeft: 6 }}>{dev < 0.1 ? "<0.1" : dev.toFixed(dev < 10 ? 1 : 0)}%</span>}
                   </td>

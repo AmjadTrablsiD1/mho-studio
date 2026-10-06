@@ -3,9 +3,9 @@
   "app": {
     "id": "mho-studio",
     "name": "MHO Studio",
-    "version": "0.1.0",
+    "version": "0.2.1",
     "icon": "📈",
-    "tagline": "Remote bench for the RIGOL MHO984"
+    "tagline": "Remote bench for RIGOL MHO900 and Teledyne LeCroy X-Stream scopes"
   },
   "server": {
     "host": "127.0.0.1",
@@ -72,6 +72,30 @@
     "write_timeout_ms": 5000,
     "read_timeout_ms": 60000,
     "backstop_ms": 5000
+  },
+  "lecroy": {
+    "_comment": "Teledyne LeCroy X-Stream oscilloscopes (WaveRunner / WavePro / WaveMaster / SDA / DDA / LabMaster, running Windows), controlled over VICP: the instrument's GPIB-style messages in 8-byte-header frames on TCP port 1861 (core/src/scpi/vicp.ts, server/vicp.ts). Commands are LeCroy's legacy remote-control set plus VBS automation (core/src/registry/lecroy.ts).",
+    "vicp_port": 1861,
+    "vendor_match": "LECROY|TELEDYNE",
+    "screen_points": 2000,
+    "descriptor_bytes": 346,
+    "deep_chunk_points": 1000000,
+    "analog_channels": 4,
+    "run_mode_default": "NORM",
+    "screenshot_setup": "HCSU DEV,PNG,PORT,NET",
+    "sim": {
+      "_comment": "The simulated LeCroy stands in for an unknown 40 GS/s X-Stream model. Every number here is the simulator's own choice, not a datasheet value of any real model.",
+      "idn": "LECROY,WM8ZI-A,LCRY0000SIM,7.9.0",
+      "max_sample_rate": 40000000000,
+      "memory_pts": [500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000, 2500000, 5000000, 10000000],
+      "default_memory_pts": 100000,
+      "codes_per_div": 6400,
+      "noise_vrms": 0.0015,
+      "ch1_sine_hz": 10000000,
+      "ch1_vpp": 0.8,
+      "ch3_square_hz": 100000,
+      "ch3_vpp": 1
+    }
   },
   "wire": {
     "_comment": "How waveform bytes are laid out. WORD byte order is detected from the data and then locked (core/src/wave/decode.ts); prefer_word_format reads 12-bit data as 16-bit words so no resolution is lost.",

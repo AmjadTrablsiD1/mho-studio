@@ -1,10 +1,10 @@
 // Deep memory: stop the scope, read the whole acquisition memory of the chosen
-// channels in chunks (RAW mode, guide §3.28), keep it here as 16-bit codes,
-// and serve zoomed min/max views, spectra and CSV from it.
+// channels in chunks (the driver knows how: RAW mode on a RIGOL, WFSU NP/FP on
+// a LeCroy), keep it here as 16-bit codes, and serve zoomed min/max views,
+// spectra and CSV from it.
 
 import { C } from "../core/src/constants.ts";
-import { codes, detectWordOrder, parsePreamble, type Preamble } from "../core/src/wave/decode.ts";
-import { parseNumber } from "../core/src/scpi/values.ts";
+import type { Preamble } from "../core/src/wave/decode.ts";
 import { spectrum, peaks, harmonics } from "../core/src/dsp/spectrum.ts";
 import { measureAll } from "../core/src/dsp/measure.ts";
 import type { WindowName } from "../core/src/dsp/window.ts";
@@ -30,52 +30,35 @@ export class DeepStore {
     this.cancelled = false;
     return scope.withBusy("deep capture", async () => {
       const wasRunning = scope.status !== "STOP";
-      const q = scope.scpi;
-      await q.write(":STOP");
-      await q.query("*OPC?", 10000).catch(() => "");
-      const srate = parseNumber(await q.query(":ACQuire:SRATe?")) ?? 0;
-      const scale = parseNumber(await q.query(":TIMebase:MAIN:SCALe?")) ?? 0;
-      const mdRaw = (await q.query(":ACQuire:MDEPth?")).trim();
-      const md = parseNumber(mdRaw);
-      const inMemory = md !== null ? md : Math.round(srate * scale * C.instrument.divisions_x);
-      const total = Math.max(1, Math.min(limit, inMemory));
-      const chunk = C.instrument.raw_chunk_points;
+      const drv = scope.drv;
       const next = new Map<string, Uint16Array>();
       const channels: DeepChannel[] = [];
       const t0 = Date.now();
       let bytes = 0;
+      let total = 0;
       try {
+        const plan = await drv.deepBegin();
+        total = Math.max(1, Math.min(limit, plan.total));
+        const chunk = scope.reg.family === "lecroy" ? C.lecroy.deep_chunk_points : C.instrument.raw_chunk_points;
         for (let ci = 0; ci < srcs.length; ci++) {
           const src = srcs[ci];
-          await q.write(`:WAVeform:SOURce ${src}`);
-          await q.write(":WAVeform:MODE RAW");
-          await q.write(":WAVeform:FORMat WORD");
           const buf = new Uint16Array(total);
           let pre: Preamble | null = null;
-          for (let start = 1; start <= total; start += chunk) {
+          for (let start = 0; start < total; start += chunk) {
             if (this.cancelled) throw new HttpError(499, "cancelled");
-            const stop = Math.min(total, start + chunk - 1);
-            await q.write(`:WAVeform:STARt ${start}`);
-            await q.write(`:WAVeform:STOP ${stop}`);
-            if (!pre) pre = parsePreamble(await q.query(":WAVeform:PREamble?"));
-            const d = await q.queryBlock(":WAVeform:DATA?");
-            if (!d.length) {
-              const e = await scope.drainErrors();
-              throw new HttpError(502, `the scope returned no data for ${src} points ${start}–${stop}${e.length ? `: ${e.map((x) => x.message).join("; ")}` : ""}`);
-            }
-            bytes += d.length;
-            const order = scope.link.wordOrderLocked ? scope.link.wordOrder : detectWordOrder(d).order;
-            const c = codes(d, "WORD", order);
-            buf.set(c.subarray(0, Math.min(c.length, total - (start - 1))), start - 1);
-            progress({ src, done: stop, total, channel: ci + 1, channels: srcs.length, bytesPerSec: bytes / Math.max(0.001, (Date.now() - t0) / 1000) });
+            const count = Math.min(chunk, total - start);
+            const got = await drv.deepChunk(src, start, count);
+            if (!pre) pre = got.pre;
+            bytes += got.bytes;
+            const n = Math.min(got.codes.length, total - start);
+            for (let i = 0; i < n; i++) buf[start + i] = got.codes[i];
+            progress({ src, done: start + count, total, channel: ci + 1, channels: srcs.length, bytesPerSec: bytes / Math.max(0.001, (Date.now() - t0) / 1000) });
           }
           next.set(src, buf);
           channels.push({ src, pre: { ...pre!, points: total }, points: total });
         }
       } finally {
-        await q.write(":WAVeform:MODE NORMal").catch(() => {});
-        await q.write(":WAVeform:STARt 1").catch(() => {});
-        if (resume && wasRunning) await q.write(":RUN").catch(() => {});
+        await drv.deepEnd(resume, wasRunning).catch(() => {});
         await scope.drainErrors().catch(() => []);
       }
       this.data = next;

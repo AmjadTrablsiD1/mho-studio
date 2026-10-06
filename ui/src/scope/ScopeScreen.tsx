@@ -3,7 +3,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { C } from "../../../core/src/constants.ts";
-import { BY_ID, key } from "../../../core/src/registry/controls.ts";
+import { key } from "../../../core/src/registry/controls.ts";
+import { reg } from "../registry.ts";
 import { fmt } from "../../../core/src/format.ts";
 import { getLive, latestFrame, onFrame, useLive, writeControl, attempt } from "../api.ts";
 import { getUi, setUi, useUi } from "../uistate.ts";
@@ -128,12 +129,18 @@ export function ScopeScreen() {
       const ch = triggerChannel(getLive().values);
       return ch ? { k: "trigger.edge.level", v: m.v(ch, pos) } : null;
     }
-    if (mk.kind === "tpos") return { k: "timebase.offset", v: -(m.t(pos) - m.toff) };
+    if (mk.kind === "tpos") {
+      if (reg().byId.get("timebase.offset")?.set) return { k: "timebase.offset", v: -(m.t(pos) - m.toff) };
+      // LeCroy: the screen centre is read from the record; the trigger position (HorOffset, + = right) moves it.
+      // Dropping the marker t seconds right of the trigger moves the trigger t seconds right.
+      const d = getLive().values["timebase.delay"];
+      return reg().byId.get("timebase.delay")?.set ? { k: "timebase.delay", v: (typeof d === "number" ? d : 0) + m.t(pos) } : null;
+    }
     return null;
   };
 
   const send = (k: string, v: number) => {
-    const c = BY_ID.get(k.split("@")[0])!;
+    const c = reg().byId.get(k.split("@")[0])!;
     const r = Number(v.toPrecision(4));
     void attempt(() => writeControl(k, c.min !== undefined ? Math.max(c.min, r) : r));
   };
@@ -165,7 +172,8 @@ export function ScopeScreen() {
         const u = getUi();
         if (d.marker.which === "ca" || d.marker.which === "cb") setUi({ [d.marker.which]: m.t(d.pos) });
         else setUi({ [d.marker.which]: m.v(u.channel, d.pos) });
-      } else if (Date.now() - d.lastSent > C.ui.drag_write_ms) {
+      } else if (Date.now() - d.lastSent > C.ui.drag_write_ms && !(d.marker.kind === "tpos" && reg().family === "lecroy")) {
+        // (a LeCroy trigger position is sent once, on release: it is relative, and the screen catches up only with the next record)
         const w = valueFor(d.marker, d.pos);
         if (w) send(w.k, w.v);
         d.lastSent = Date.now();
@@ -202,10 +210,10 @@ export function ScopeScreen() {
       const ch = getUi().channel;
       const k = key("channel.scale", ch);
       const v = vals[k];
-      if (typeof v === "number") void attempt(() => writeControl(k, nextValue(BY_ID.get("channel.scale")!, ch, v, dir as 1 | -1, e.altKey)));
+      if (typeof v === "number") void attempt(() => writeControl(k, nextValue(reg().byId.get("channel.scale")!, ch, v, dir as 1 | -1, e.altKey)));
     } else {
       const v = vals["timebase.scale"];
-      if (typeof v === "number") void attempt(() => writeControl("timebase.scale", nextValue(BY_ID.get("timebase.scale")!, null, v, dir as 1 | -1, e.altKey)));
+      if (typeof v === "number") void attempt(() => writeControl("timebase.scale", nextValue(reg().byId.get("timebase.scale")!, null, v, dir as 1 | -1, e.altKey)));
     }
   };
 

@@ -55,7 +55,7 @@ const TYPES: Record<string, string> = {
 function openBrowser(url: string): void {
   const [cmd, argv] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
   try {
-    spawn(cmd, argv, { detached: true, stdio: "ignore" }).unref();
+    spawn(cmd, argv, { detached: true, stdio: "ignore", windowsHide: true }).unref();
   } catch {
     /* headless */
   }
@@ -156,6 +156,15 @@ const stamp = () => new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
 const num = (v: unknown, d: number) => (v === undefined || v === null || v === "" ? d : Number(v));
 
 type Route = (req: IncomingMessage, res: ServerResponse, params: string[], url: URL) => Promise<void>;
+/** What a screen dump is, from its first bytes: X-Stream scopes may send BMP or JPEG where PNG was not accepted. */
+function imageType(b: Uint8Array): { mime: string; ext: string } {
+  if (b[0] === 0x89 && b[1] === 0x50) return { mime: "image/png", ext: "png" };
+  if (b[0] === 0xff && b[1] === 0xd8) return { mime: "image/jpeg", ext: "jpg" };
+  if (b[0] === 0x42 && b[1] === 0x4d) return { mime: "image/bmp", ext: "bmp" };
+  if ((b[0] === 0x49 && b[1] === 0x49) || (b[0] === 0x4d && b[1] === 0x4d)) return { mime: "image/tiff", ext: "tif" };
+  return { mime: "application/octet-stream", ext: "bin" };
+}
+
 const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[] = [
   {
     method: "GET", path: /^\/api\/whoami$/, mutate: false,
@@ -187,12 +196,23 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
     method: "POST", path: /^\/api\/connect$/, mutate: true,
     handler: async (req, res) => {
       const b = await body(req);
-      json(res, 200, await scope.connect({ host: String(b.host ?? ""), port: num(b.port, C.instrument.scpi_port), sim: b.sim === true, usb: b.usb === true, usbId: b.usbId ? String(b.usbId) : null }));
+      json(res, 200, await scope.connect({
+        host: String(b.host ?? ""),
+        port: num(b.port, C.instrument.scpi_port),
+        protocol: b.protocol === "vicp" ? "vicp" : b.protocol === "raw" ? "raw" : undefined,
+        sim: b.sim === true,
+        simModel: b.simModel === "lecroy" ? "lecroy" : "rigol",
+        usb: b.usb === true,
+        usbId: b.usbId ? String(b.usbId) : null,
+      }));
     },
   },
   { method: "POST", path: /^\/api\/disconnect$/, mutate: true, handler: async (_q, res) => json(res, 200, await scope.disconnect()) },
   { method: "POST", path: /^\/api\/usb$/, mutate: true, handler: async (_q, res) => json(res, 200, await listUsb()) },
-  { method: "POST", path: /^\/api\/discover$/, mutate: true, handler: async (req, res) => json(res, 200, await discover(num((await body(req)).port, C.instrument.scpi_port))) },
+  { method: "POST", path: /^\/api\/discover$/, mutate: true, handler: async (req, res) => {
+      const b = await body(req);
+      json(res, 200, await discover(num(b.port, C.instrument.scpi_port), b.protocol === "vicp" ? "vicp" : b.protocol === "raw" ? "raw" : undefined));
+    } },
   { method: "POST", path: /^\/api\/transport\/reset$/, mutate: true, handler: async (_q, res) => (resetTransport(), json(res, 200, { ok: true })) },
   // ------------------------------------------------------------ settings
   {
@@ -242,10 +262,11 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
     method: "GET", path: /^\/api\/screenshot\.png$/, mutate: false,
     handler: async (_q, res, _p, url) => {
       const png = await scope.screenshot();
+      const img = imageType(png);
       res.writeHead(200, {
-        "Content-Type": "image/png",
+        "Content-Type": img.mime,
         "Cache-Control": "no-store",
-        ...(url.searchParams.has("download") ? { "Content-Disposition": `attachment; filename="MHO984-${stamp()}.png"` } : {}),
+        ...(url.searchParams.has("download") ? { "Content-Disposition": `attachment; filename="${(scope.link.idn?.model || "scope").replace(/[^\w.-]/g, "_")}-${stamp()}.${img.ext}"` } : {}),
       });
       res.end(png);
     },
@@ -289,6 +310,10 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
     method: "POST", path: /^\/api\/presets\/recall$/, mutate: true,
     handler: async (req, res) => {
       const b = await body(req);
+      const meta = listPresets().find((p) => p.name === String(b.name));
+      const model = scope.link.idn?.model ?? "";
+      // A setup file only means something to the kind of instrument that wrote it (a RIGOL file sent to a LeCroy is gibberish).
+      if (meta && model && meta.model && meta.model !== model) throw new HttpError(400, `"${b.name}" was saved on a ${meta.model}; this is a ${model}. Setup files load only on the model that wrote them.`);
       if (b.confirmed !== true) throw new HttpError(409, `Recall "${b.name}"? It replaces every setting on the oscilloscope.`);
       json(res, 200, await scope.restoreSetup(readPreset(String(b.name))));
     },
@@ -420,11 +445,11 @@ server.listen(Number(explicitPort ?? C.server.port), C.server.host, async () => 
   if (!flag("no-open")) openBrowser(url);
   // Reconnect to where we were last time, without blocking the window.
   const s = loadSettings();
-  if (flag("sim")) void scope.connect({ sim: true }).catch(() => {});
+  if (flag("sim")) void scope.connect({ sim: true, simModel: flag("lecroy") ? "lecroy" : "rigol" }).catch(() => {});
   else if (flag("no-autoconnect")) return;
-  else if (s.lastKind === "sim") void scope.connect({ sim: true }).catch(() => {});
+  else if (s.lastKind === "sim") void scope.connect({ sim: true, simModel: s.simModel }).catch(() => {});
   else if (s.lastKind === "usb") void scope.connect({ usb: true, usbId: s.usbId }).catch(() => {});
-  else if (s.lastKind === "tcp" && s.host) void scope.connect({ host: s.host, port: s.port }).catch(() => {});
+  else if (s.lastKind === "tcp" && s.host) void scope.connect({ host: s.host, port: s.port, protocol: s.protocol }).catch(() => {});
 });
 
 let shuttingDown = false;

@@ -1,0 +1,47 @@
+# Every push: the full test suite on Windows and macOS, and on Windows the
+# installer itself, then the installed app started on a simulator. This is the
+# app's only run on a real Windows machine until one is at hand.
+name: ci
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Server and core tests
+        working-directory: server
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+      - name: Build the interface
+        working-directory: ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Interface tests (both simulators, both themes)
+        working-directory: ui
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - name: Windows installer, then the installed app on the simulated LeCroy
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File install-windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "installer failed" }
+          $main = Join-Path $env:LOCALAPPDATA "Programs\mho-studio\server\main.ts"
+          if (-not (Test-Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "MHO Studio.lnk"))) { throw "no Desktop shortcut" }
+          $p = Start-Process node -ArgumentList "`"$main`"", "--port", "4398", "--no-open", "--no-reuse", "--sim", "--lecroy" -PassThru
+          Start-Sleep -Seconds 6
+          $s = Invoke-RestMethod http://127.0.0.1:4398/api/state
+          Stop-Process -Id $p.Id -Force
+          if ($s.link.state -ne "connected" -or $s.link.family -ne "lecroy") { throw "installed app did not connect to the simulated LeCroy: $($s.link | ConvertTo-Json)" }
+          Write-Host "installed app connected: $($s.link.idn.raw)"

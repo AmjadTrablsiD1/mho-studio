@@ -3,17 +3,18 @@
 // shows what the instrument actually accepted.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BY_ID, CONTROLS, key, relevant, type Control } from "../../../core/src/registry/controls.ts";
+import { key, relevant, type Control } from "../../../core/src/registry/controls.ts";
 import { fmt, parseSI } from "../../../core/src/format.ts";
 import { step125, stepFine } from "../../../core/src/wave/steps.ts";
 import type { Value } from "../../../core/src/scpi/values.ts";
 import { action, attempt, getLive, readGroup, toast, useLive, writeControl, type WriteResult } from "../api.ts";
 import { GROUP_LABEL, mnemonicLabel } from "../../../core/src/registry/labels.ts";
+import { reg, useReg } from "../registry.ts";
 
 /** The key a `when` rule depends on, bound to the same suffix. */
 function depKey(c: Control, n: number | null): string | null {
   if (!c.when) return null;
-  const dep = BY_ID.get(c.when.id);
+  const dep = reg().byId.get(c.when.id);
   return dep?.suffix ? key(c.when.id, n ?? 1) : c.when.id;
 }
 
@@ -61,7 +62,7 @@ export function useWrite(k: string): [(v: Value) => Promise<void>, Note, boolean
     setBusy(false);
     clearTimeout(timer.current);
     if (!r) return;
-    const c = BY_ID.get(k.split("@")[0])!;
+    const c = reg().byId.get(k.split("@")[0])!;
     if (r.errors.length) setNote({ text: r.errors.map((e) => `${e.code} ${e.message}`).join("; "), err: true });
     else if (r.coerced) setNote({ text: `asked ${valueText(c, r.requested)} — instrument set ${valueText(c, r.value)}` });
     else setNote(null);
@@ -72,7 +73,8 @@ export function useWrite(k: string): [(v: Value) => Promise<void>, Note, boolean
 }
 
 export function Ctl({ id, n = null, label, hideLabel }: { id: string; n?: number | null; label?: string; hideLabel?: boolean }) {
-  const c = BY_ID.get(id);
+  const r = useReg();
+  const c = r.byId.get(id);
   const k = c ? key(id, c.suffix ? (n ?? 1) : null) : id;
   const v = useLive((s) => s.values[k]);
   const dk = c ? depKey(c, n) : null;
@@ -80,20 +82,22 @@ export function Ctl({ id, n = null, label, hideLabel }: { id: string; n?: number
   const connected = useLive((s) => s.link?.state === "connected");
   const unanswered = useLive((s) => s.unsupported.includes(id));
   const [write, note, busy] = useWrite(k);
-  if (!c) return <div className="ctl"><span className="c-label">unknown {id}</span></div>;
-  if (c.when && !relevant(c, n, () => dv)) return null;
+  // Panels list every control either family may have; this instrument does not have this one.
+  if (!c) return null;
+  if (c.when && !relevant(c, n, () => dv, r.byId)) return null;
+  const tip = r.family === "rigol" ? `${c.header}  (guide §${c.section})` : `${c.q ?? c.header}${c.help ? ` — ${c.help}` : ""}`;
   const name = label ?? c.label;
   if (unanswered && c.kind !== "action")
     return (
       <div className="ctl" data-ctl={k}>
-        {!hideLabel && <span className="c-label" title={`${c.header}  (guide §${c.section})`}><span>{name}</span></span>}
+        {!hideLabel && <span className="c-label" title={tip}><span>{name}</span></span>}
         <div className="c-ro muted" title={`${c.header}? got no reply from this instrument's firmware; the app no longer asks it`}>not answered by this firmware</div>
       </div>
     );
   return (
     <div className="ctl" data-ctl={k}>
       {!hideLabel && (
-        <label className="c-label" title={`${c.header}  (guide §${c.section})`} htmlFor={`ctl-${k}`}>
+        <label className="c-label" title={tip} htmlFor={`ctl-${k}`}>
           <span>{name}</span>
         </label>
       )}
@@ -217,15 +221,17 @@ function TextField({ k, v, write, disabled, name }: { k: string; v: string; writ
 export function GroupPanel({ group, sub, n, title, exclude = [] }: { group: string; sub?: string | null; n?: number; title?: string; exclude?: string[] }) {
   const connected = useLive((s) => s.link?.state === "connected");
   const options = useLive((s) => s.options);
+  const r = useReg();
   const list = useMemo(
-    () => CONTROLS.filter((c) => c.group === group && (sub === undefined || c.sub === sub) && !c.hidden && !exclude.includes(c.id)),
-    [group, sub, exclude.join(",")],
+    () => r.controls.filter((c) => c.group === group && (sub === undefined || c.sub === sub) && !c.hidden && !exclude.includes(c.id)),
+    [r, group, sub, exclude.join(",")],
   );
   useEffect(() => {
     if (connected) void readGroup(group, sub, n).catch(() => {});
   }, [connected, group, sub, n]);
   const needs = list.find((c) => c.needs)?.needs;
   const has = !needs || (needs === "AFG" ? options.AFG100 || options.AFG50 : options[needs]);
+  if (!list.length) return null;
   return (
     <div className="section">
       <div className="section-title">

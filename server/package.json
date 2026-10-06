@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node main.ts",
     "sim": "node ../sim/main.ts",
-    "test": "MHO_STUDIO_HOME=$(mktemp -d) node --test --test-timeout=120000 'test/*.test.ts' '../core/test/*.test.ts'"
+    "test": "node --test --test-timeout=120000 \"test/*.test.ts\" \"../core/test/*.test.ts\""
   },
   "optionalDependencies": {
     "usb": "^3.1.0"
