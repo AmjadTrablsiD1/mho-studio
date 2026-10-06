@@ -1,0 +1,14 @@
+{
+  "name": "mho-studio-packaging",
+  "private": true,
+  "type": "module",
+  "description": "Builds the single-file executable (MHO Studio.exe on Windows). Build-time only; the app itself needs none of this.",
+  "scripts": {
+    "exe": "node build-exe.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "postject": "^1.0.0-alpha.6",
+    "rcedit": "^4.0.1"
+  }
+}

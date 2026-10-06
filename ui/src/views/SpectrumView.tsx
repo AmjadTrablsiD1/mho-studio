@@ -8,15 +8,16 @@ import { C } from "../../../core/src/constants.ts";
 import { fmt } from "../../../core/src/format.ts";
 import { dbv, harmonics, peaks, spectrum, type Harmonics, type Peak } from "../../../core/src/dsp/spectrum.ts";
 import { WINDOW_LABELS, type WindowName } from "../../../core/src/dsp/window.ts";
-import { attempt, get, onFrame, useLive } from "../api.ts";
+import { attempt, get, onFrame, post, useLive } from "../api.ts";
 import { Plot } from "../charts/Plot.tsx";
 import { sourceColor, sourceLabel, token } from "../theme.ts";
 import { useReg } from "../registry.ts";
 
-type Result = { df: number; db: number[]; peaks: Peak[]; harm: Harmonics | null; points: number; rbw: number; from: "screen" | "deep" };
+type Result = { df: number; db: number[]; peaks: Peak[]; harm: Harmonics | null; points: number; rbw: number; from: "screen" | "deep" | "scope"; unit?: string };
+type ScopeFft = { df: number; bins: number[]; peaks: Peak[]; harmonics: Harmonics | null; points: number; rbwHz: number; unit: string };
 
 export function SpectrumView() {
-  const { screenPoints, family } = useReg();
+  const { screenPoints, family, features } = useReg();
   const lecroy = family === "lecroy";
   const values = useLive((s) => s.values);
   const deep = useLive((s) => s.deep);
@@ -30,7 +31,7 @@ export function SpectrumView() {
   const [avg, setAvg] = useState(4);
   const [logx, setLogx] = useState(false);
   const [range, setRange] = useState<[number, number]>([-120, 20]);
-  const [mode, setMode] = useState<"screen" | "deep">("screen");
+  const [mode, setMode] = useState<"screen" | "deep" | "scope">("screen");
   const [res, setRes] = useState<Result | null>(null);
   const acc = useRef<{ p: Float64Array; n: number; key: string } | null>(null);
 
@@ -55,6 +56,28 @@ export function SpectrumView() {
     });
   }, [src, win, avg, mode]);
 
+  // The instrument's own FFT (LeCroy F8): poll while chosen, switch it off when left.
+  useEffect(() => {
+    if (mode !== "scope") return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      const r = await attempt(() => get<ScopeFft>(`scope-fft?src=${src}&window=${win}`));
+      if (!alive) return;
+      if (r) setRes({ df: r.df, db: r.bins.map(dbv), peaks: r.peaks, harm: r.harmonics, points: r.points, rbw: r.rbwHz, from: "scope", unit: r.unit });
+      timer = setTimeout(() => void tick(), C.lecroy.fft_poll_ms);
+    };
+    void tick();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      void attempt(() => post("scope-fft/stop"));
+    };
+  }, [mode, src, win]);
+  useEffect(() => {
+    if (!features.scopeFft && mode === "scope") setMode("screen");
+  }, [features.scopeFft, mode]);
+
   const runDeep = async () => {
     const r = await attempt(() => get<{ df: number; bins: number[]; peaks: Peak[]; harmonics: Harmonics | null; points: number; rbwHz: number }>(`deep/spectrum?src=${src}&window=${win}`));
     if (r) setRes({ df: r.df, db: r.bins.map(dbv), peaks: r.peaks, harm: r.harmonics, points: r.points, rbw: r.rbwHz, from: "deep" });
@@ -76,14 +99,15 @@ export function SpectrumView() {
         <div className="segmented" role="radiogroup" aria-label="Data">
           <button className={mode === "screen" ? "active" : ""} onClick={() => setMode("screen")}>Live screen</button>
           <button className={mode === "deep" ? "active" : ""} onClick={() => setMode("deep")} disabled={!deep}>Deep capture</button>
+          {features.scopeFft && <button className={mode === "scope" ? "active" : ""} onClick={() => setMode("scope")} data-test="spectrum-scope" title="The instrument computes the FFT of the whole record (math trace F8); only the spectrum is transferred">Scope FFT</button>}
         </div>
         {mode === "screen" ? (
           <div className="segmented" role="radiogroup" aria-label="Averaging">
             {[1, 4, 16, 64].map((n) => <button key={n} className={avg === n ? "active" : ""} onClick={() => setAvg(n)}>{n === 1 ? "No avg" : `${n}×`}</button>)}
           </div>
-        ) : (
+        ) : mode === "deep" ? (
           <button className="btn small" onClick={() => void runDeep()}>Analyse capture</button>
-        )}
+        ) : null}
         <div className="segmented" role="radiogroup" aria-label="Frequency axis">
           <button className={!logx ? "active" : ""} onClick={() => setLogx(false)}>Lin</button>
           <button className={logx ? "active" : ""} onClick={() => setLogx(true)}>Log</button>
@@ -100,7 +124,7 @@ export function SpectrumView() {
           <div className="plot-card" data-test="spectrum-plot">
             {res ? (
               <Plot
-                title={`${sourceLabel(src)} · ${WINDOW_LABELS[win]} · ${res.from === "deep" ? "deep capture" : `${avg}× power average`}`}
+                title={`${sourceLabel(src)} · ${WINDOW_LABELS[win]} · ${res.from === "deep" ? "deep capture" : res.from === "scope" ? "computed by the scope (F8)" : `${avg}× power average`}`}
                 x={{ min: logx ? Math.max(res.df, fmax / 1e4) : 0, max: fmax, log: logx, unit: "Hz" }}
                 y={{ min: range[0], max: range[1], unit: "dBV" }}
                 series={[{ x: xs.slice(logx ? 1 : 0), y: res.db.slice(logx ? 1 : 0), color: col, width: 1.2 }]}
@@ -144,7 +168,7 @@ export function SpectrumView() {
                 <div className="metric-row"><span>Points</span><strong>{res ? res.points.toLocaleString() : "—"}</strong></div>
                 <div className="metric-row"><span>Bin spacing</span><strong>{fmt(res?.df, "Hz", 3)}</strong></div>
                 <div className="metric-row"><span>RBW (window ENBW)</span><strong>{fmt(res?.rbw, "Hz", 3)}</strong></div>
-                <p className="body-text">Zero-padded to a power of two. Levels are RMS per bin, corrected for the window's coherent gain; THD sums the power in each harmonic's main lobe up to H{C.spectrum.harmonics}. A screen record has only {screenPoints} points — capture deep memory for resolution below {res ? fmt(res.df, "Hz", 2) : "a bin"}.{lecroy ? " On a LeCroy the screen record is every Nth point of the acquisition, without a filter: anything above half that reduced rate folds back (aliases) into this screen spectrum. Deep memory has every point." : ""}</p>
+                <p className="body-text">Zero-padded to a power of two. Levels are RMS per bin, corrected for the window's coherent gain; THD sums the power in each harmonic's main lobe up to H{C.spectrum.harmonics}. {res?.from === "scope" ? "Scope FFT: the instrument transforms its whole record at the full sample rate (math trace F8, the window chosen here); the app finds peaks and THD in the result. Levels are the instrument's magnitude scaling, which the manual does not state as peak or RMS — compare with a known sine before trusting absolute dBV. " : ""}A screen record has only {screenPoints} points — capture deep memory for resolution below {res ? fmt(res.df, "Hz", 2) : "a bin"}.{lecroy ? " On a LeCroy the screen record is every Nth point of the acquisition, without a filter: anything above half that reduced rate folds back (aliases) into this screen spectrum. Deep memory has every point." : ""}</p>
               </div>
             </div>
           </div>

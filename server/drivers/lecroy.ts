@@ -53,8 +53,10 @@ export class LecroyDriver implements Driver {
   private s: ScopeService;
   /** The trigger mode Run goes back to (Stop and Single leave it). */
   private runMode: string = C.lecroy.run_mode_default;
-  /** Points in a full record, per channel, and when that was learned. */
-  private totals = new Map<string, { total: number; key: string; at: number }>();
+  /** Points in a full record, per channel, and when that was learned; and the bits per point its descriptor states. */
+  private totals = new Map<string, { total: number; bits: number; key: string; at: number }>();
+  /** Deep memory read as bytes (8-bit data), half the transfer of words. */
+  byteDeep = false;
 
   constructor(s: ScopeService) {
     this.s = s;
@@ -99,6 +101,37 @@ export class LecroyDriver implements Driver {
     if (typeof c.pick === "number") r = field(r, c.pick);
     else if (typeof c.pick === "string") r = after(r, this.fill(c.pick, n));
     return lecroyValue(c.kind, r, c.options?.map((o) => o.value));
+  }
+
+  /** The automation property behind a control, if it has one: its `b`, or the property its VBS query reads. */
+  private propOf(c: Control, n: number | null): string | null {
+    const t = c.b ?? /^VBS\? 'return=app\.(.+)'$/.exec(c.q ?? "")?.[1];
+    return t ? this.fill(t, n) : null;
+  }
+
+  batchable(c: Control): boolean {
+    return this.propOf(c, 1) !== null;
+  }
+
+  /**
+   * One VBS line for many values: return=app.A & "|" & app.B … The reply is
+   * split on "|". VBScript turns numbers into text with the instrument's
+   * Windows locale, so a decimal comma ("0,05") is accepted too.
+   */
+  async readMany(items: { c: Control; n: number | null }[]): Promise<Value[] | null> {
+    const props = items.map((it) => this.propOf(it.c, it.n));
+    if (!items.length || props.some((p) => !p)) return null;
+    const sep = C.lecroy.batch_separator;
+    const expr = props.map((p) => `app.${p}`).join(` & "${sep}" & `);
+    const reply = await this.s.scpi.query(`VBS? 'return=${expr}'`, C.instrument.value_timeout_ms * 2);
+    const parts = reply.trim().split(sep);
+    if (parts.length !== items.length) return null;
+    return items.map(({ c }, i) => {
+      let r = parts[i].trim();
+      if (c.bmap) r = c.bmap[r] ?? r;
+      if ((c.kind === "number" || c.kind === "readonly") && /^[+-]?\d+,\d+(E[+-]?\d+)?$/i.test(r)) r = r.replace(",", ".");
+      return lecroyValue(c.kind, r, c.options?.map((o) => o.value));
+    });
   }
 
   async errors(): Promise<InstrumentError[]> {
@@ -149,7 +182,7 @@ export class LecroyDriver implements Driver {
     await q.write("WFSU SP,0,NP,0,FP,0,SN,0");
     const d = parseWavedesc(await q.queryBlock(`${name}:WF? DESC`, C.instrument.query_timeout_ms * 2));
     const total = Math.max(d.count, d.lastValid - d.firstValid + 1, 0);
-    this.totals.set(name, { total, key: k, at: Date.now() });
+    this.totals.set(name, { total, bits: d.nominalBits, key: k, at: Date.now() });
     return total;
   }
 
@@ -222,8 +255,18 @@ export class LecroyDriver implements Driver {
     await q.query("*OPC?", 10000).catch(() => "");
     this.totals.clear();
     // Every displayed channel holds the same number of points; the first one tells.
-    const src = this.visibleSources()[0] ?? "CHANnel1";
-    return { total: await this.total(lc(src)) };
+    const srcs = this.visibleSources().length ? this.visibleSources() : ["CHANnel1"];
+    const total = await this.total(lc(srcs[0]));
+    for (const s of srcs.slice(1)) await this.total(lc(s));
+    // 8-bit data loses nothing as bytes: half the transfer. Averaged (or ERES) data has more bits: keep words.
+    this.byteDeep = srcs.every((s) => {
+      const n = Number(/(\d)$/.exec(s)?.[1]);
+      const avg = this.s.values.get(key("channel.averages", n));
+      const bits = this.totals.get(lc(s))?.bits ?? 16;
+      return bits > 0 && bits <= 8 && (avg === null || avg === undefined || Number(avg) <= 1);
+    });
+    if (this.byteDeep) await q.write("CFMT DEF9,BYTE,BIN");
+    return { total };
   }
 
   async deepChunk(src: string, start: number, count: number): Promise<DeepChunk> {
@@ -242,7 +285,41 @@ export class LecroyDriver implements Driver {
   async deepEnd(resume: boolean, wasRunning: boolean): Promise<void> {
     const q = this.s.scpi;
     await q.write("WFSU SP,0,NP,0,FP,0,SN,0").catch(() => {});
+    if (this.byteDeep) await q.write("CFMT DEF9,WORD,BIN").catch(() => {});
+    this.byteDeep = false;
     if (resume && wasRunning) await q.write(`TRMD ${this.runMode}`).catch(() => {});
+  }
+
+  /** The math slot set up for the FFT ("src|window"), so it is configured once, not every read. */
+  private fftKey: string | null = null;
+
+  /**
+   * F8 = FFT(source) on the instrument: computed on the whole record at the
+   * full sample rate, so it does not alias like the sparsed screen record; only
+   * the spectrum crosses the link. Property names from the automation manual
+   * (app.Math.Fx.Operator1Setup: Window, Type).
+   */
+  async scopeFft(src: string, window: string): Promise<{ df: number; f0: number; mag: Float32Array; unit: string; points: number }> {
+    const q = this.s.scpi;
+    const F = C.lecroy.fft_slot;
+    const name = lc(src);
+    const key = `${name}|${window}`;
+    if (this.fftKey !== key) {
+      const win = (C.lecroy.fft_windows as Record<string, string>)[window] ?? "VonHann";
+      for (const line of [`Source1 = "${name}"`, `MathMode = "OneOperator"`, `Operator1 = "FFT"`, `Operator1Setup.Window = "${win}"`, `Operator1Setup.Type = "Magnitude"`, `View = True`]) {
+        await q.write(`VBS 'app.Math.${F}.${line}'`);
+      }
+      this.fftKey = key;
+    }
+    await q.write("WFSU SP,0,NP,0,FP,0,SN,0");
+    const { desc, volts } = decodeLecroyWave(await q.queryBlock(`${F}:WF? ALL`, C.instrument.block_timeout_ms));
+    return { df: desc.interval, f0: desc.horizOffset, mag: volts, unit: desc.vertUnit, points: volts.length };
+  }
+
+  async scopeFftStop(): Promise<void> {
+    if (!this.fftKey) return;
+    this.fftKey = null;
+    await this.s.scpi.write(`VBS 'app.Math.${C.lecroy.fft_slot}.View = False'`);
   }
 
   slowQuery(cmd: string): boolean {

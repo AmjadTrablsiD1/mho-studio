@@ -293,6 +293,11 @@ test("LeCroy: the simulated X-Stream over VICP — traces, family-only views, co
     await box.fill("VBS? 'return=app.Acquisition.Horizontal.SamplingRate'");
     await box.press("Enter");
     await expect(page.locator("main")).toContainText("40000000000");
+    // The scope's own FFT: the 10 MHz sine is the top peak.
+    await page.getByTestId("nav-spectrum").click();
+    await page.getByTestId("spectrum-scope").click();
+    await expect(page.locator("main")).toContainText(/10\.0\d* MHz/);
+    await page.getByTestId("nav-scope").click();
   } finally {
     await api(page, "connect", { sim: true, simModel: "rigol" });
   }

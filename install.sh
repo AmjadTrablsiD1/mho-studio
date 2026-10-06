@@ -33,7 +33,7 @@ if pkill -f "$DEST/server/main.ts" 2>/dev/null; then echo "stopped the running $
 # 3. Code -> ~/.local/share. Settings and presets (~/.config) are untouched.
 rsync -a --delete \
   --exclude '.git' --exclude 'node_modules' --exclude 'test-results' --exclude 'playwright-report' \
-  --exclude 'ui/tests/screenshots' --exclude '.DS_Store' \
+  --exclude 'ui/tests/screenshots' --exclude '.DS_Store' --exclude 'packaging' --exclude '.github' \
   "$SRC/" "$DEST/"
 # 4a. The server's one dependency, optional: `usb` (USB-TMC; prebuilt native binary per platform).
 #     If it cannot be installed, the app still runs and says USB is unavailable.

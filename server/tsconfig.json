@@ -1,0 +1,21 @@
+{
+  "//": "Type check only (npm run typecheck): Node runs the .ts files itself by stripping types, so nothing is emitted. Uses the TypeScript and @types/node installed for the interface (ui/).",
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "noUnusedLocals": true,
+    "typeRoots": ["../ui/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": ["*.ts", "drivers/*.ts", "test/*.ts", "../sim/*.ts", "../core/src/**/*.ts", "../core/test/*.ts"]
+}

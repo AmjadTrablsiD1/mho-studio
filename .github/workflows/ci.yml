@@ -26,11 +26,21 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
+      - name: Type check (server, simulators, core)
+        working-directory: server
+        run: npm run typecheck
       - name: Interface tests (both simulators, both themes)
         working-directory: ui
         run: |
           npx playwright install --with-deps chromium
           npx playwright test
+      - name: Keep the traces of a failed interface test
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-results-${{ matrix.os }}
+          path: ui/test-results/
+          retention-days: 14
       - name: Windows installer, then the installed app on the simulated LeCroy
         if: runner.os == 'Windows'
         shell: pwsh
@@ -45,3 +55,25 @@ jobs:
           Stop-Process -Id $p.Id -Force
           if ($s.link.state -ne "connected" -or $s.link.family -ne "lecroy") { throw "installed app did not connect to the simulated LeCroy: $($s.link | ConvertTo-Json)" }
           Write-Host "installed app connected: $($s.link.idn.raw)"
+      - name: Single-file MHO Studio.exe (carries its own Node.js), then run it
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd packaging
+          npm install --no-audit --no-fund
+          npm run exe
+          $exe = Join-Path (Get-Location) "out\MHO Studio.exe"
+          $p = Start-Process $exe -ArgumentList "--port", "4397", "--no-open", "--no-reuse", "--sim", "--lecroy" -PassThru
+          Start-Sleep -Seconds 8
+          $s = Invoke-RestMethod http://127.0.0.1:4397/api/state
+          $page = Invoke-WebRequest http://127.0.0.1:4397/ -UseBasicParsing
+          Stop-Process -Id $p.Id -Force
+          if ($s.link.family -ne "lecroy" -or $page.StatusCode -ne 200) { throw "the .exe did not serve the app or connect" }
+          Write-Host "MHO Studio.exe works: $($s.link.idn.raw)"
+      - name: Publish MHO Studio.exe
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MHO-Studio-windows-exe
+          path: packaging/out/MHO Studio.exe
+          retention-days: 30

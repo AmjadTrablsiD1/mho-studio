@@ -43,7 +43,8 @@ export class UsbtmcStream extends Duplex {
   private tag = 0;
   /** Every device operation runs through this chain: the USB library refuses (by throwing) any call while a transfer is pending. */
   private queue: Promise<void> = Promise.resolve();
-  private readonly pipe: BulkPipe;
+  /** The bulk endpoints (not `pipe`: that name is Duplex's own pipe() method). */
+  private readonly bulk: BulkPipe;
   /** Largest reply chunk asked for per REQUEST_DEV_DEP_MSG_IN. */
   private readonly chunk: number;
   /** How long the next reply may take to start (set per query by the SCPI client). */
@@ -51,7 +52,7 @@ export class UsbtmcStream extends Duplex {
 
   constructor(pipe: BulkPipe, chunk: number = C.usb.request_bytes) {
     super();
-    this.pipe = pipe;
+    this.bulk = pipe;
     this.chunk = chunk;
   }
 
@@ -81,7 +82,7 @@ export class UsbtmcStream extends Duplex {
       if (this.destroyed) return cb();
       try {
         this.tag = nextTag(this.tag);
-        await this.pipe.out(msgOut(this.tag, data, true), C.usb.write_timeout_ms);
+        await this.bulk.out(msgOut(this.tag, data, true), C.usb.write_timeout_ms);
         cb();
       } catch (e) {
         cb();
@@ -96,7 +97,7 @@ export class UsbtmcStream extends Duplex {
         if (gone(e as Error)) return void this.destroy(e as Error);
         // No reply (or a broken one): empty the instrument's buffers so the next question gets the next answer.
         try {
-          await this.pipe.clear();
+          await this.bulk.clear();
         } catch (c) {
           return void this.destroy(c as Error);
         }
@@ -113,9 +114,9 @@ export class UsbtmcStream extends Duplex {
     for (;;) {
       this.tag = nextTag(this.tag);
       const tag = this.tag;
-      await this.pipe.out(requestIn(tag, this.chunk), C.usb.write_timeout_ms);
+      await this.bulk.out(requestIn(tag, this.chunk), C.usb.write_timeout_ms);
       // +3: the payload is padded to a multiple of 4, and a read shorter than the transfer overflows
-      const first = await this.pipe.in(wholePackets(TMC.header + this.chunk + 3, this.pipe.maxPacket), timeoutMs);
+      const first = await this.bulk.in(wholePackets(TMC.header + this.chunk + 3, this.bulk.maxPacket), timeoutMs);
       const h = parseInHeader(first);
       if (h.tag !== tag) throw new Error(`USB-TMC: reply tag ${h.tag}, expected ${tag} (a reply left over from before)`);
       const take = (b: Uint8Array) => {
@@ -128,7 +129,7 @@ export class UsbtmcStream extends Duplex {
       take(first.subarray(TMC.header, TMC.header + have));
       // A long DEV_DEP_MSG_IN continues in further transfers, without a header.
       while (have < h.size) {
-        const more = await this.pipe.in(wholePackets(h.size - have + 3, this.pipe.maxPacket), timeoutMs);
+        const more = await this.bulk.in(wholePackets(h.size - have + 3, this.bulk.maxPacket), timeoutMs);
         if (!more.length) throw new Error("USB-TMC: the device stopped in the middle of a reply");
         const n = Math.min(more.length, h.size - have);
         take(more.subarray(0, n));
@@ -145,7 +146,7 @@ export class UsbtmcStream extends Duplex {
     // Wait for the transfer in flight to end (it has a timeout) before releasing the device:
     // releasing it mid-transfer throws inside the USB library.
     void this.queue
-      .then(() => this.pipe.close())
+      .then(() => this.bulk.close())
       .catch(() => undefined)
       .then(() => cb(err));
   }

@@ -231,9 +231,44 @@ test("deep capture reads every point in chunks; a sparsed screen record is every
   close(meta.xorigin, sparse.pre.xorigin, 1e-12, "same first point");
   const v = deep.volts("CHANnel1", 0, 2_500_000);
   for (const k of [0, 1, 7, 100, Math.floor(2_499_999 / sp)]) close(v[k * sp], sparse.volts[k], 1e-6, `point ${k}`);
+  // 8-bit data with no averaging travels as bytes (half of 16-bit words), then words are restored.
+  const sim = (scope as unknown as { sim: { scope: { log: string[] } } }).sim.scope;
+  const fmts = sim.log.filter((l) => l.startsWith("CFMT"));
+  assert.deepEqual(fmts.slice(-2), ["CFMT DEF9,BYTE,BIN", "CFMT DEF9,WORD,BIN"]);
+  // With averaging on, the data has more than 8 bits: words throughout.
+  await scope.write("channel.averages@1", 4);
+  sim.log.length = 0;
+  await deep.capture(scope, ["CHANnel1"], 100_000, false, () => {});
+  assert.ok(!sim.log.some((l) => l === "CFMT DEF9,BYTE,BIN"), "averaged data must not be read as bytes");
+  await scope.write("channel.averages@1", 1);
   await scope.write("acquire.mdepth", 100000);
   await scope.write("timebase.scale", 1e-7);
   await scope.action("root.run", null);
+});
+
+test("the scope's own FFT (F8) sees 10 MHz where the sparsed screen record cannot", async () => {
+  await scope.write("timebase.scale", 20e-6);
+  await scope.write("acquire.mdepth", 1_000_000);
+  // 200 µs on 1 Mpts = 5 GS/s; the screen record (every 500th point, 10 MS/s) has its Nyquist at 5 MHz.
+  const screen = await scope.readTrace("CHANnel1");
+  assert.ok(1 / screen.pre.xinc / 2 < C.lecroy.sim.ch1_sine_hz, "the screen record is too slow for the 10 MHz sine");
+  const sim = (scope as unknown as { sim: { scope: { log: string[] } } }).sim.scope;
+  sim.log.length = 0;
+  // Flat top: a tone between two bins still reads its full level (Hann would read up to 1.4 dB low).
+  const r = await scope.scopeFft("CHANnel1", "flattop");
+  const again = await scope.scopeFft("CHANnel1", "flattop");
+  close(r.peaks[0].hz, C.lecroy.sim.ch1_sine_hz, 2 * r.df, "FFT peak");
+  close(r.peaks[0].vrms, C.lecroy.sim.ch1_vpp / 2 / Math.SQRT2, 0.006, "FFT level (simulator scales RMS per bin)");
+  assert.ok(sim.log.includes(`VBS 'app.Math.F8.Operator1Setup.Window = "FlatTop"'`));
+  assert.ok(again.points > 100_000, "the whole record, not the screen's 2000 points");
+  // Set up once (six VBS writes), then only read.
+  assert.equal(sim.log.filter((l) => l.startsWith("VBS 'app.Math.F8.")).length, 6);
+  assert.equal(sim.log.filter((l) => l === "F8:WF? ALL").length, 2);
+  await scope.scopeFftStop();
+  await scope.readKey("channel.scale@1"); // a reply means the instrument has processed everything sent before it
+  assert.ok(sim.log.includes("VBS 'app.Math.F8.View = False'"), "F8 switched off again");
+  await scope.write("acquire.mdepth", 100000);
+  await scope.write("timebase.scale", 1e-7);
 });
 
 test("a setup file (PNSU) goes out as a block and comes back", async () => {
@@ -248,6 +283,37 @@ test("features this family lacks are refused, not attempted", async () => {
   await assert.rejects(scope.syncClock(), /not offered/);
   await assert.rejects(scope.busTable(1), /not offered/);
   await assert.rejects(scope.write("source.frequency@1", 1000), /no control/);
+});
+
+test("the settings watch is one VBS round trip, not one per value", async () => {
+  const sim = (scope as unknown as { sim: { scope: { log: string[] } } }).sim.scope;
+  sim.log.length = 0;
+  await (scope as unknown as { watch: () => Promise<void> }).watch();
+  const queries = sim.log.filter((l) => /\?/.test(l));
+  // Two lines: everything, then the values that depend on the trigger source.
+  assert.ok(queries.length <= 2, `watch took ${queries.length} queries: ${queries.join(" | ")}`);
+  assert.match(queries[0], /^VBS\? 'return=app\.Acquisition\.C1\.View & "\|" & /);
+});
+
+test("a model lacking one property: the grouped read falls back, finds it, and remembers it", async () => {
+  const { LecroySim } = await import("../../sim/lecroy.ts");
+  const h = await startLecroySim(0, "127.0.0.1", new LecroySim({ lacks: [/HorOffset/], commaLocale: true }));
+  const svc = new ScopeService(() => {});
+  try {
+    await svc.connect({ host: "127.0.0.1", port: h.port, protocol: "vicp" });
+    assert.equal(svc.link.family, "lecroy");
+    assert.ok(svc.unsupported.has("timebase.delay"), "HorOffset learned as unanswered");
+    // Values still arrive — and numbers written with a decimal comma read correctly.
+    assert.equal(svc.values.get("channel.scale@1"), 0.1);
+    assert.equal(svc.values.get("trigger.edge.level"), 0);
+    assert.equal(svc.values.get("acquire.srate"), 4e10);
+    h.scope.log.length = 0;
+    await (svc as unknown as { watch: () => Promise<void> }).watch();
+    assert.ok(h.scope.log.filter((l) => /\?/.test(l)).length <= 2, "grouped again once the missing property is known");
+  } finally {
+    await svc.disconnect();
+    await h.close();
+  }
 });
 
 test("discovery finds a LeCroy by asking *IDN? inside a VICP frame", async () => {

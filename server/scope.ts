@@ -12,6 +12,8 @@ import { encode, matchOption, parseBool, parseIdn, parseNumber, type Identity, t
 import { lecroyIdn } from "../core/src/scpi/lecroy.ts";
 import { codes, detectWordOrder, toVolts, type ByteOrder, type Preamble } from "../core/src/wave/decode.ts";
 import { delay, measureAll, Stats } from "../core/src/dsp/measure.ts";
+import { compactBins, harmonics, peaks, type Spectrum } from "../core/src/dsp/spectrum.ts";
+import { makeWindow, type WindowName } from "../core/src/dsp/window.ts";
 import type { Slot } from "../core/src/registry/measurements.ts";
 import { ScpiClient, ScpiError, type Traffic } from "./scpi.ts";
 import { transportStatus, type Conn } from "./transport.ts";
@@ -209,6 +211,7 @@ export class ScopeService {
     const idn = family === "lecroy" ? lecroyIdn(raw) : parseIdn(raw);
     this.drv = family === "lecroy" ? new LecroyDriver(this) : new RigolDriver(this);
     this.slots = [];
+    this.batchFailures = 0;
     this.stats.clear();
     this.cross.clear();
     this.scpi.syncToken = idn.raw;
@@ -340,6 +343,36 @@ export class ScopeService {
   private async readBatch(keys: string[]): Promise<void> {
     const live = keys.filter((k) => !this.unsupported.has(parseKey(k).id));
     if (!this.reg.features.compound) {
+      if (this.drv.readMany && this.batchFailures < 2) {
+        // Values whose command names the trigger source ({src}) go last, after the source itself is known.
+        const late = (k: string) => /\{l?src\}/.test(`${this.reg.byId.get(parseKey(k).id)?.q ?? ""}`);
+        const can = (k: string) => this.drv.batchable?.(this.reg.byId.get(parseKey(k).id)!) ?? true;
+        // Values with no grouped form (legacy-only commands) are read one by one; the rest travel together.
+        for (const k of live.filter((k) => !can(k))) await this.readKey(k).catch((e) => this.tolerate(e));
+        const batch = live.filter(can);
+        const ordered = [...batch.filter((k) => !late(k)), ...batch.filter(late)];
+        const firstLate = ordered.findIndex(late);
+        const groups: string[][] = [];
+        const cut = (from: number, to: number) => {
+          for (let i = from; i < to; i += C.lecroy.batch_props) groups.push(ordered.slice(i, Math.min(to, i + C.lecroy.batch_props)));
+        };
+        cut(0, firstLate < 0 ? ordered.length : firstLate);
+        if (firstLate >= 0) cut(firstLate, ordered.length);
+        for (const group of groups) {
+          const qs = group.map((k) => this.queryOf(k));
+          const vals = await this.drv.readMany(qs.map((x) => ({ c: x.c, n: x.n }))).catch((e) => {
+            this.tolerate(e);
+            return null;
+          });
+          if (vals) group.forEach((k, j) => this.values.set(k, vals[j]));
+          else {
+            // One property this model lacks spoils the whole line: read them one by one (which finds and remembers it).
+            if (++this.batchFailures >= 2) log("grouped reads failed twice; reading values one by one for this session");
+            for (const k of group) await this.readKey(k).catch((e) => this.tolerate(e));
+          }
+        }
+        return;
+      }
       for (const k of live) await this.readKey(k).catch((e) => this.tolerate(e));
       return;
     }
@@ -368,6 +401,8 @@ export class ScopeService {
   }
 
   unsupported = new Set<string>();
+  /** Grouped reads that failed this session (LeCroy VBS lines); after two the service reads one by one. */
+  private batchFailures = 0;
 
   private markUnsupported(id: string, q: string): void {
     if (this.unsupported.has(id)) return;
@@ -383,6 +418,13 @@ export class ScopeService {
 
   async readKeys(keys: string[]): Promise<Record<string, Value>> {
     const read: string[] = [];
+    // Families that read many values in one round trip (LeCroy VBS lines) do so here too: connect and panel reads.
+    const readable = (k: string) => !!this.reg.byId.get(parseKey(k).id)?.query;
+    if (this.drv.readMany && !this.reg.features.compound && keys.length > 1 && keys.every(readable)) {
+      await this.readBatch(keys);
+      read.push(...keys);
+      keys = [];
+    }
     for (const k of keys) {
       try {
         await this.readKey(k);
@@ -787,6 +829,21 @@ export class ScopeService {
     this.offered("decode", "Bus decoding");
     const data = await this.scpi.queryBlock(`:BUS${n}:DATA?`);
     return parseBusTable(new TextDecoder().decode(data));
+  }
+
+  /** The instrument's own FFT, analysed here like any spectrum (peaks, THD). */
+  async scopeFft(src: string, window: WindowName) {
+    this.need();
+    this.offered("scopeFft", "The instrument's own FFT");
+    const r = await this.scpi.exclusive(() => this.drv.scopeFft!(src, window));
+    const s: Spectrum = { df: r.df, vrms: Float64Array.from(r.mag), window, enbwHz: makeWindow(window, 1024).enbwBins * r.df, n: 2 * r.points };
+    const c = compactBins(s.vrms, s.df);
+    return { src, points: r.points, df: c.df, f0: r.f0, rbwHz: s.enbwHz, bins: c.bins, unit: r.unit, peaks: peaks(s, C.spectrum.peaks), harmonics: harmonics(s, C.spectrum.harmonics) };
+  }
+
+  async scopeFftStop(): Promise<{ ok: boolean }> {
+    if (this.ready && this.drv.scopeFftStop) await this.drv.scopeFftStop();
+    return { ok: true };
   }
 
   /** Refuse a feature the instrument on the line does not have. */

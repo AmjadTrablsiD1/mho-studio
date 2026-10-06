@@ -41,6 +41,17 @@ export interface Driver {
   /** `count` points of `src` from index `start` (0-based). */
   deepChunk(src: string, start: number, count: number): Promise<DeepChunk>;
   deepEnd(resume: boolean, wasRunning: boolean): Promise<void>;
+  /**
+   * Several values in one round trip, where the family has a way (LeCroy: one VBS
+   * line joining automation properties). Null when one of them has no such form.
+   */
+  readMany?(items: { c: Control; n: number | null }[]): Promise<Value[] | null>;
+  /** Whether readMany can carry this control at all. */
+  batchable?(c: Control): boolean;
+  /** The instrument's own FFT of `src` (magnitude per bin as the instrument scales it), set up on first use. */
+  scopeFft?(src: string, window: string): Promise<{ df: number; f0: number; mag: Float32Array; unit: string; points: number }>;
+  /** Switch that FFT off again. */
+  scopeFftStop?(): Promise<void>;
   /** Console queries that return big data blocks get the long timeout. */
   slowQuery(cmd: string): boolean;
 }

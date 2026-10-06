@@ -207,19 +207,20 @@ export function preambleOf(d: Wavedesc, points: number): Preamble {
 }
 
 /** Build a descriptor + data the way the instrument would (the simulator uses this; tests check the round trip). */
-export function buildLecroyWave(o: { codes: Int16Array; gain: number; offset: number; interval: number; horizOffset: number; source: number; instrument: string; order?: "little" | "big"; firstPoint?: number; sparsing?: number }): Uint8Array {
+export function buildLecroyWave(o: { codes: Int16Array | Int8Array; gain: number; offset: number; interval: number; horizOffset: number; source: number; instrument: string; order?: "little" | "big"; firstPoint?: number; sparsing?: number; nominalBits?: number }): Uint8Array {
   const le = (o.order ?? "little") === "little";
-  const out = new Uint8Array(346 + o.codes.length * 2);
+  const width = o.codes instanceof Int8Array ? 1 : 2;
+  const out = new Uint8Array(346 + o.codes.length * width);
   const dv = new DataView(out.buffer);
   const put = (at: number, s: string, n: number) => {
     for (let i = 0; i < Math.min(n, s.length); i++) out[at + i] = s.charCodeAt(i);
   };
   put(0, "WAVEDESC", 16);
   put(16, "LECROY_2_3", 16);
-  dv.setInt16(32, 1, le); // COMM_TYPE word
+  dv.setInt16(32, width === 2 ? 1 : 0, le); // COMM_TYPE: 0 byte, 1 word
   dv.setInt16(34, le ? 1 : 0, le);
   dv.setInt32(36, 346, le);
-  dv.setInt32(60, o.codes.length * 2, le);
+  dv.setInt32(60, o.codes.length * width, le);
   put(76, o.instrument, 16);
   dv.setInt32(116, o.codes.length, le);
   dv.setInt32(124, 0, le);
@@ -228,13 +229,16 @@ export function buildLecroyWave(o: { codes: Int16Array; gain: number; offset: nu
   dv.setInt32(136, o.sparsing ?? 1, le);
   dv.setFloat32(156, o.gain, le);
   dv.setFloat32(160, o.offset, le);
-  dv.setInt16(172, 8, le);
+  dv.setInt16(172, o.nominalBits ?? 8, le);
   dv.setFloat32(176, o.interval, le);
   dv.setFloat64(180, o.horizOffset, le);
   put(196, "V", 48);
   put(244, "S", 48);
   dv.setInt16(344, o.source, le);
-  for (let i = 0; i < o.codes.length; i++) dv.setInt16(346 + 2 * i, o.codes[i], le);
+  for (let i = 0; i < o.codes.length; i++) {
+    if (width === 2) dv.setInt16(346 + 2 * i, o.codes[i], le);
+    else dv.setInt8(346 + i, o.codes[i]);
+  }
   return out;
 }
 

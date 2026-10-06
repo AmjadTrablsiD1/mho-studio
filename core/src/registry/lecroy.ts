@@ -54,9 +54,9 @@ const when = (id: string, ...is: string[]) => ({ when: { id, is } });
 // generation; later models keep these and add more).
 export const LECROY_CONTROLS: Control[] = [
   // ---------------------------------------------------------- channels
-  ctl({ id: "channel.display", label: "Display", kind: "bool", header: "C<n>:TRACE", q: "C<n>:TRA?", w: "C<n>:TRA {v}", suffix: CH, primary: true, watch: true }),
-  ctl({ id: "channel.scale", label: "Scale", kind: "number", unit: "V", step: "125", header: "C<n>:VOLT_DIV", q: "C<n>:VDIV?", w: "C<n>:VDIV {v}", suffix: CH, primary: true, watch: true, after: ["channel.offset"] }),
-  ctl({ id: "channel.offset", label: "Offset", kind: "number", unit: "V", header: "C<n>:OFFSET", q: "C<n>:OFST?", w: "C<n>:OFST {v}", suffix: CH, primary: true, watch: true }),
+  ctl({ id: "channel.display", label: "Display", kind: "bool", header: "C<n>:TRACE", q: "C<n>:TRA?", w: "C<n>:TRA {v}", b: "Acquisition.C<n>.View", suffix: CH, primary: true, watch: true }),
+  ctl({ id: "channel.scale", label: "Scale", kind: "number", unit: "V", step: "125", header: "C<n>:VOLT_DIV", q: "C<n>:VDIV?", w: "C<n>:VDIV {v}", b: "Acquisition.C<n>.VerScale", suffix: CH, primary: true, watch: true, after: ["channel.offset"] }),
+  ctl({ id: "channel.offset", label: "Offset", kind: "number", unit: "V", header: "C<n>:OFFSET", q: "C<n>:OFST?", w: "C<n>:OFST {v}", b: "Acquisition.C<n>.VerOffset", suffix: CH, primary: true, watch: true }),
   ctl({
     id: "channel.coupling", label: "Coupling / input", kind: "enum", header: "C<n>:COUPLING", q: "C<n>:CPL?", w: "C<n>:CPL {v}", suffix: CH, primary: true,
     options: opts(["D1M", "DC 1 MΩ"], ["A1M", "AC 1 MΩ"], ["D50", "DC 50 Ω"], ["GND", "Ground"]),
@@ -80,7 +80,7 @@ export const LECROY_CONTROLS: Control[] = [
   vb({ id: "channel.label.position", label: "Name position (s)", kind: "string", prop: "Acquisition.C<n>.LabelsPosition", suffix: CH, help: "Where on the trace the name sits, as a time (e.g. 0, or 0,55e-9 for two labels)." }),
 
   // ---------------------------------------------------------- timebase and acquisition
-  ctl({ id: "timebase.scale", label: "Time / div", kind: "number", unit: "s", step: "125", header: "TIME_DIV", q: "TDIV?", w: "TDIV {v}", primary: true, watch: true, after: ["acquire.srate", "acquire.mdepth"] }),
+  ctl({ id: "timebase.scale", label: "Time / div", kind: "number", unit: "s", step: "125", header: "TIME_DIV", q: "TDIV?", w: "TDIV {v}", b: "Acquisition.Horizontal.HorScale", primary: true, watch: true, after: ["acquire.srate", "acquire.mdepth"] }),
   ctl({
     id: "timebase.offset", label: "Screen centre", kind: "readonly", unit: "s", header: "(from the waveform descriptor)", query: false,
     help: "The time at the centre of the record, taken from each waveform's descriptor (HORIZ_OFFSET + half the record). Move it with Trigger position.",
@@ -96,6 +96,7 @@ export const LECROY_CONTROLS: Control[] = [
   // ---------------------------------------------------------- trigger: common
   ctl({
     id: "trigger.sweep", label: "Trigger mode", kind: "enum", header: "TRIG_MODE", q: "TRMD?", w: "TRMD {v}", primary: true, watch: true,
+    b: "Acquisition.TriggerMode", bmap: { Auto: "AUTO", Normal: "NORM", Single: "SINGLE", Stop: "STOP", Stopped: "STOP" },
     options: opts(["AUTO", "Auto"], ["NORM", "Normal"], ["SINGLE", "Single"], ["STOP", "Stop"]),
   }),
   vb({

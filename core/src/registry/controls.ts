@@ -58,6 +58,9 @@ export type Control = {
   w?: string;
   /** Which part of a multi-field reply holds the value: a field index, or the item after a token ("C<n>" in "C1,OFF,C2,ON"). */
   pick?: number | string;
+  /** LeCroy: the automation property holding the same value, so many can be read in one VBS query; `bmap` translates its values to the control's. */
+  b?: string;
+  bmap?: Record<string, string>;
   /** Also set these after a write (a LeCroy name is only seen once its label is switched on). */
   then?: { id: string; value: string | number | boolean }[];
 };

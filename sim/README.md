@@ -131,3 +131,16 @@ HorOffset (trigger position); sampling rate. The others (trigger types and
 their fields, labels, sample mode, segments…) are stored and returned only:
 the simulator always triggers on an edge of the trigger source, whatever type
 is selected. Booleans come back as -1 / 0.
+
+### Since 0.2.2
+
+- `VBS? 'return=app.A & "|" & app.B'`: string concatenation of properties and
+  string literals, as VBScript does; one unknown property fails the line (EXR,
+  no reply). `new LecroySim({ lacks: [/HorOffset/] })` models a scope without
+  a property, `commaLocale: true` a Windows writing "0,05".
+- `CFMT DEF9,BYTE,BIN`: 8-bit codes with a 256× gain; NOMINAL_BITS 8, or 11
+  for a channel averaging more than one sweep.
+- Math F1–F8 as an FFT of a channel (`Source1`, `Operator1 = "FFT"`,
+  `Operator1Setup.Window`, `View`): the magnitude spectrum of the whole record
+  (up to 2^19 points) in RMS volts per bin — the simulator's choice; the
+  manual does not state the real instrument's scaling.

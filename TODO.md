@@ -34,6 +34,15 @@
 - **LeCroy, fuller:** all eight trigger types of the X-Stream automation manual with their fields; holdoff; channel names (on the scope's screen and in the app); deskew, interpolation, bandwidth limit via automation; sampling mode, sequence segments, interleave, memory management; draggable trigger position; level to 0 V, clear sweeps. Property names checked against the June 2003 WaveMaster / WavePro 7000 automation manual.
 - **Windows 10 / 11:** `install-windows.bat` / `.ps1` (Node check, build, copy to %LOCALAPPDATA%, Desktop and Start-menu shortcuts); `run-mho-studio.bat` rewritten; cross-platform `npm test`; a Windows path bug in the UI tests fixed; `.github/workflows/ci.yml` runs everything on Windows and macOS.
 
+## Done (0.2.2, 2026-10-06)
+
+- Grouped LeCroy reads (one VBS line per watch cycle; fallback and relearning when a model lacks a property; decimal-comma locale).
+- Scope FFT (LeCroy F8) in the Spectrum view, analysed by the app.
+- LeCroy deep memory as bytes for 8-bit data.
+- `npm run typecheck` for server, simulators and core, in CI; two old type errors fixed (a `pipe` field shadowing Duplex.pipe in the USB stream; an untyped JSON reply).
+- Single-file `MHO Studio.exe` (packaging/build-exe.mjs, Node SEA), built and run in CI on Windows, published as an artifact; checked on macOS here.
+- The occasional first-UI-test failure: not reproduced in 7 full runs; CI now keeps failure traces.
+
 ## Doing
 
 - Nothing in progress.
@@ -41,7 +50,7 @@
 ## Next
 
 00. **Push to GitHub once** so the CI runs the tests and the installer on Windows (the only Windows run so far is none). Then install on the Windows 11 PC itself.
-0. **First session on the real LeCroy** (model still unknown; 40 GS/s, Windows, 10+ years old). In this order: Remote = TCPIP (VICP) and port 1861 reachable; `*IDN?` names it and the link pill shows the model; `CHDR OFF` takes effect (values parse; check the log for unanswered queries); traces overlay the scope's own screen (Screenshot) at a few V/div, offsets and timebases — this settles whether a sparsed descriptor's HORIZ_INTERVAL includes the sparsing factor (`pointInterval`) and the sign of TRDL; `HCSU DEV,PNG,PORT,NET` + `SCDP` gives an image (else try BMP: `C.lecroy.screenshot_setup`); `INR?` bit 0 means "new acquisition" (trigger badge); `PAVA?` reply layout; deep capture of a few Mpts (chunk size `lecroy.deep_chunk_points`) and its speed; `PNSU?` round trip; how VBS returns booleans (-1 or True: both are read); which automation properties this model lacks (logged as unanswered) and which trigger types it adds. Record what differs in `sim/README.md` and make `sim/lecroy.ts` match.
+0. **First session on the real LeCroy** (model still unknown; 40 GS/s, Windows, 10+ years old). In this order: Remote = TCPIP (VICP) and port 1861 reachable; `*IDN?` names it and the link pill shows the model; `CHDR OFF` takes effect (values parse; check the log for unanswered queries); traces overlay the scope's own screen (Screenshot) at a few V/div, offsets and timebases — this settles whether a sparsed descriptor's HORIZ_INTERVAL includes the sparsing factor (`pointInterval`) and the sign of TRDL; `HCSU DEV,PNG,PORT,NET` + `SCDP` gives an image (else try BMP: `C.lecroy.screenshot_setup`); `INR?` bit 0 means "new acquisition" (trigger badge); `PAVA?` reply layout; deep capture of a few Mpts (chunk size `lecroy.deep_chunk_points`) and its speed; `PNSU?` round trip; the scope FFT's magnitude scaling (peak or RMS — compare a known sine); whether a VBS line of 24 properties is accepted (lower `lecroy.batch_props` if not); how VBS returns booleans (-1 or True: both are read); which automation properties this model lacks (logged as unanswered) and which trigger types it adds. Record what differs in `sim/README.md` and make `sim/lecroy.ts` match.
 1. **First session on the real MHO984.** Check, in this order: `*IDN?` and options; WORD byte order is detected and locked (Instrument view); traces overlay the scope's own screen (Screenshot) at several V/div and offsets; `:MEASure:ITEM?` agrees with the cross-check; deep capture of 25 Mpts (is 250 000 points per read accepted? adjust `instrument.raw_chunk_points`); Bode on a known RC. Record anything that differs from the guide in `sim/README.md` and make the simulator match.
 2. **Frame rate on hardware.** If the LAN round trip makes 4 channels slow, read `:WAVeform:PREamble?` only when settings change, or use BYTE for the live view.
 3. **USB on the real scope, continued:** probe every query once (finds all unanswered ones for fw 00.01.00 and any reply that does not match the guide's options); a 25 Mpt deep read over USB; Windows (Zadig/WinUSB) and Linux (udev).

@@ -53,7 +53,7 @@ Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
 # 4. Copy the app. Settings and presets live in %USERPROFILE%\.config\mho-studio and are not touched.
 Step "Copying to $Dest"
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
-robocopy $Src $Dest /MIR /NFL /NDL /NJH /NJS /NP /XD .git node_modules test-results playwright-report screenshots .github /XF .DS_Store | Out-Null
+robocopy $Src $Dest /MIR /NFL /NDL /NJH /NJS /NP /XD .git node_modules test-results playwright-report screenshots .github packaging /XF .DS_Store | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "copying the files failed (robocopy exit $LASTEXITCODE)" }
 
 # 5. The server's one optional dependency (USB-TMC). Without it, LAN and the simulators still work.

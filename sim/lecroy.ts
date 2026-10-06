@@ -14,6 +14,8 @@ import { C } from "../core/src/constants.ts";
 import { buildLecroyWave } from "../core/src/scpi/lecroy.ts";
 import { makeBlock, parseBlockArg } from "../core/src/scpi/block.ts";
 import { measureAll } from "../core/src/dsp/measure.ts";
+import { spectrum } from "../core/src/dsp/spectrum.ts";
+import type { WindowName } from "../core/src/dsp/window.ts";
 import { LECROY_CONTROLS } from "../core/src/registry/lecroy.ts";
 import { awgSource, clockSource, gauss, sampleSource, uartSource, type Source } from "./bench.ts";
 import { Raster, hex } from "./png.ts";
@@ -53,6 +55,9 @@ export class LecroySim {
   private trcp = new Map<string, string>();
   private chdr = "SHORT";
   private cord = "HI";
+  private cfmt = "WORD";
+  /** Math traces F1–F8: only what an FFT needs (source, operator, window, type, view). */
+  private math = new Map<number, Record<string, V>>();
   private wfsu = { sp: 0, np: 0, fp: 0, sn: 0 };
   private cmr = 0;
   private exr = 0;
@@ -62,8 +67,14 @@ export class LecroySim {
   private sources: Source[];
   /** Every message received, for tests. */
   log: string[] = [];
+  /** Automation properties this simulated model lacks (to test how the app copes with a model that has fewer). */
+  lacks: RegExp[];
+  /** Write numbers the way a Windows set to a decimal-comma locale would ("0,05"). */
+  commaLocale: boolean;
 
-  constructor() {
+  constructor(opts: { lacks?: RegExp[]; commaLocale?: boolean } = {}) {
+    this.lacks = opts.lacks ?? [];
+    this.commaLocale = opts.commaLocale ?? false;
     this.sources = [
       awgSource({ on: true, fn: "SIN", freq: S.ch1_sine_hz, amp: S.ch1_vpp, offset: 0, duty: 50, symmetry: 50 }),
       clockSource(),
@@ -174,8 +185,11 @@ export class LecroySim {
     const gain = c.vdiv / S.codes_per_div;
     const left = -5 * this.tdiv - this.trdl;
     const order = this.cord === "LO" ? "little" : "big";
-    const codes = this.codes(n, fp, what === "DESC" ? 0 : count, sp);
-    const wave = buildLecroyWave({ codes, gain, offset: c.ofst, interval: dt * sp, horizOffset: left + fp * dt, source: n - 1, instrument: "LECROYWM8ZI-A", order, firstPoint: fp, sparsing: sp });
+    const words = this.codes(n, fp, what === "DESC" ? 0 : count, sp);
+    // BYTE: the 8-bit codes themselves, and a gain 256 times larger.
+    const byte = this.cfmt === "BYTE";
+    const codes = byte ? Int8Array.from(words, (w) => w >> 8) : words;
+    const wave = buildLecroyWave({ codes, gain: byte ? gain * 256 : gain, offset: c.ofst, nominalBits: c.avg > 1 ? 11 : 8, interval: dt * sp, horizOffset: left + fp * dt, source: n - 1, instrument: "LECROYWM8ZI-A", order, firstPoint: fp, sparsing: sp });
     if (what === "DESC") {
       // A descriptor alone still states how many points a full read would bring.
       const dv = new DataView(wave.buffer);
@@ -204,6 +218,31 @@ export class LecroySim {
     if (!k) return `${item},UNDEF,IV`;
     const x = m[k[0]];
     return x === null || x === undefined || !Number.isFinite(x) ? `${item},UNDEF,NP` : `${item},${lnum(x, k[1])},OK`;
+  }
+
+  /**
+   * Fk when it is an FFT of a channel: the magnitude spectrum of the whole
+   * record (up to 2^19 points). The simulator scales magnitude as RMS volts per
+   * bin, the app's own convention; a real instrument's scaling may differ.
+   */
+  private fftTrace(k: number): Uint8Array | null {
+    const m = this.math.get(k);
+    if (!m || String(m.operator1).toUpperCase() !== "FFT" || m.view !== true) return null;
+    const n = Number(/^C(\d)$/i.exec(String(m.source1))?.[1]);
+    if (!(n >= 1 && n <= 4)) return null;
+    this.maybeAcquire(n);
+    const { points, dt } = this.timing();
+    const count = Math.min(points, 1 << 19);
+    const c = this.ch[n - 1];
+    const gain = c.vdiv / S.codes_per_div;
+    const v = Float32Array.from(this.codes(n, 0, count, 1), (x) => gain * x - c.ofst);
+    const names: Record<string, WindowName> = { VonHann: "hann", BlackmanHarris: "blackman-harris", FlatTop: "flattop", Rectangular: "rect" };
+    const s = spectrum(v, dt, names[String(m["operator1setup.window"])] ?? "hann", false);
+    let max = 0;
+    for (const x of s.vrms) max = Math.max(max, x);
+    const g = (max || 1) / 30000;
+    const codes = Int16Array.from(s.vrms, (x) => Math.round(x / g));
+    return buildLecroyWave({ codes, gain: g, offset: 0, interval: s.df, horizOffset: 0, source: 7 + k, instrument: "LECROYWM8ZI-A", order: this.cord === "LO" ? "little" : "big", nominalBits: 16 });
   }
 
   private screenshot(): Uint8Array {
@@ -282,6 +321,20 @@ export class LecroySim {
       return q ? null : undefined;
     };
 
+    const fm = /^F([1-8]):(WF|WAVEFORM)$/.exec(header);
+    if (fm) {
+      if (!q) return unknown();
+      const data = this.fftTrace(Number(fm[1]));
+      if (!data) return unknown();
+      const what = (args.split(",")[0] || "ALL").toUpperCase();
+      const prefix = this.chdr === "OFF" ? `${what},` : `F${fm[1]}:WF ${what},`;
+      const block = makeBlock(data);
+      const outb = new Uint8Array(prefix.length + block.length);
+      outb.set(enc.encode(prefix), 0);
+      outb.set(block, prefix.length);
+      return outb;
+    }
+
     if (c) {
       switch (h) {
         case "TRA": case "TRACE":
@@ -354,7 +407,9 @@ export class LecroySim {
         this.chdr = args.toUpperCase().startsWith("OFF") ? "OFF" : "SHORT";
         return undefined;
       case "CFMT": case "COMM_FORMAT":
-        return q ? this.head("CFMT", "DEF9,WORD,BIN") : undefined;
+        if (q) return this.head("CFMT", `DEF9,${this.cfmt},BIN`);
+        this.cfmt = /BYTE/i.test(args) ? "BYTE" : "WORD";
+        return undefined;
       case "CORD": case "COMM_ORDER":
         if (q) return this.head("CORD", this.cord);
         this.cord = args.toUpperCase().startsWith("LO") ? "LO" : "HI";
@@ -467,7 +522,7 @@ export class LecroySim {
   /** Properties that are the simulator's own state rather than stored values. */
   private linked(path: string): { get: () => V; set?: (v: V) => boolean } | null {
     const p = path.toLowerCase();
-    const ch = /^acquisition\.c(\d)\.(invert|averagesweeps|bandwidthlimit|verscale|veroffset)$/.exec(p);
+    const ch = /^acquisition\.c(\d)\.(invert|averagesweeps|bandwidthlimit|verscale|veroffset|view)$/.exec(p);
     if (ch) {
       const c = this.ch[Number(ch[1]) - 1];
       if (!c) return null;
@@ -477,9 +532,22 @@ export class LecroySim {
         case "bandwidthlimit": return { get: () => (c.bwl === "OFF" ? "Full" : c.bwl.replace("HZ", "Hz")), set: (v) => ((c.bwl = String(v) === "Full" ? "OFF" : String(v).toUpperCase()), true) };
         case "verscale": return { get: () => c.vdiv, set: (v) => ((c.vdiv = Number(v)), true) };
         case "veroffset": return { get: () => c.ofst, set: (v) => ((c.ofst = Number(v)), true) };
+        case "view": return { get: () => c.tra, set: (v) => ((c.tra = v === true), true) };
       }
     }
+    const mf = /^math\.f([1-8])\.(source1|mathmode|operator1|operator1setup\.window|operator1setup\.type|view)$/.exec(p);
+    if (mf) {
+      const k = Number(mf[1]);
+      if (!this.math.has(k)) this.math.set(k, { source1: "C1", mathmode: "OneOperator", operator1: "Average", "operator1setup.window": "VonHann", "operator1setup.type": "Magnitude", view: false });
+      const m = this.math.get(k)!;
+      return { get: () => m[mf[2]], set: (v) => ((m[mf[2]] = mf[2] === "view" ? v === true || /^(true|-1)$/i.test(String(v)) : String(v).replace(/^"|"$/g, "")), true) };
+    }
     if (p === "acquisition.horizontal.samplingrate") return { get: () => this.timing().fs };
+    if (p === "acquisition.horizontal.horscale") return { get: () => this.tdiv, set: (v) => ((this.tdiv = Number(v)), true) };
+    if (p === "acquisition.triggermode") {
+      const names: Record<string, string> = { AUTO: "Auto", NORM: "Normal", SINGLE: "Single", STOP: "Stopped" };
+      return { get: () => names[this.trmd] ?? this.trmd };
+    }
     if (p === "acquisition.horizontal.horoffset") return { get: () => this.trdl, set: (v) => ((this.trdl = Number(v)), true) };
     if (p === "acquisition.trigger.source") return { get: () => toAuto(this.trsrc), set: (v) => ((this.trsrc = toLegacy(String(v))), true) };
     const tc = /^acquisition\.trigger\.(c\d|ext|extdivide10)\.(level|slope)$/.exec(p);
@@ -489,6 +557,14 @@ export class LecroySim {
       return { get: () => (this.trsl.get(src) === "NEG" ? "Negative" : "Positive"), set: (v) => (this.trsl.set(src, String(v) === "Negative" ? "NEG" : "POS"), true) };
     }
     return null;
+  }
+
+  private readProp(path: string): V | undefined {
+    if (this.lacks.some((re) => re.test(path))) return undefined;
+    const link = this.linked(path);
+    if (link) return link.get();
+    const key = path.toLowerCase();
+    return this.propSpec.has(key) ? (this.props.get(key) ?? "") : undefined;
   }
 
   /** VBS 'app.X = v' and VBS? 'return=app.X'. An unknown property or a bad value: no change, EXR set, and no reply to a query. */
@@ -504,16 +580,28 @@ export class LecroySim {
       else this.exr = 21;
       return undefined;
     }
-    const path = (get?.[1] ?? set?.[1] ?? "").trim();
+    if (q && get) {
+      // return=app.A & "|" & app.B …: each term a property or a string literal; one unknown property fails the whole line.
+      let out = "";
+      for (const term of get[1].split("&").map((t) => t.trim())) {
+        const lit = /^"(.*)"$/.exec(term);
+        if (lit) {
+          out += lit[1];
+          continue;
+        }
+        const v = this.readProp(term.replace(/^app\./i, ""));
+        if (v === undefined) {
+          this.exr = 21;
+          return null;
+        }
+        out += this.commaLocale && typeof v === "number" ? fmtV(v).replace(".", ",") : fmtV(v);
+      }
+      return this.head("VBS", out);
+    }
+    const path = (set?.[1] ?? "").trim();
     const key = path.toLowerCase();
     const link = this.linked(path);
     const spec = this.propSpec.get(key);
-    if (q && get) {
-      if (link) return this.head("VBS", fmtV(link.get()));
-      if (spec) return this.head("VBS", fmtV(this.props.get(key) ?? ""));
-      this.exr = 21;
-      return null;
-    }
     if (!q && set && (link || spec)) {
       const raw = set[2].trim();
       const kind = spec?.kind ?? "string";

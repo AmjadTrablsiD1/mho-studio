@@ -27,9 +27,12 @@ import { log } from "./log.ts";
 process.on("unhandledRejection", (e) => log(`unhandled rejection: ${(e as Error)?.stack ?? e}`));
 process.on("uncaughtException", (e) => log(`uncaught exception: ${e.stack ?? e}`));
 
-const here = dirname(fileURLToPath(import.meta.url));
+// Inside the Windows .exe the server is one CommonJS bundle: there is no import.meta.url, and the
+// exe unpacks the interface itself and says where (MHO_STUDIO_DIST; packaging/build-exe.mjs).
+const self = import.meta.url ? fileURLToPath(import.meta.url) : process.execPath;
+const here = dirname(self);
 const root = resolve(here, "..");
-const DIST = join(root, "ui", "dist");
+const DIST = process.env.MHO_STUDIO_DIST || join(root, "ui", "dist");
 const PORT_FILE = expand(C.paths.port_file);
 const TOKEN = randomBytes(24).toString("hex");
 
@@ -62,13 +65,13 @@ function openBrowser(url: string): void {
 }
 
 const mtime = (f: string) => (existsSync(f) ? Math.round(statSync(f).mtimeMs) : 0);
-const BUILD = [join(DIST, "index.html"), fileURLToPath(import.meta.url), join(here, "scope.ts")].map(mtime).join("-");
+const BUILD = [join(DIST, "index.html"), self, join(here, "scope.ts")].map(mtime).join("-");
 
 async function whoami(port: number): Promise<{ token: string; build?: string; pid?: number } | null> {
   try {
     const res = await fetch(`http://${C.server.host}:${port}/api/whoami`, { signal: AbortSignal.timeout(1200) });
-    const w = res.ok ? await res.json() : null;
-    return w?.token === C.server.whoami_token ? w : null;
+    const w = (res.ok ? await res.json() : null) as { token?: string; build?: string; pid?: number } | null;
+    return w?.token === C.server.whoami_token ? (w as { token: string; build?: string; pid?: number }) : null;
   } catch {
     return null;
   }
@@ -77,7 +80,10 @@ async function whoami(port: number): Promise<{ token: string; build?: string; pi
 // ------------------------------------------------------------------ reuse
 
 const explicitPort = value("port");
-if (!explicitPort && !flag("no-reuse") && existsSync(PORT_FILE)) {
+
+/** A copy of this build already running: bring it forward and stop here. An older build: replace it. */
+async function replacePrevious(): Promise<void> {
+  if (explicitPort || flag("no-reuse") || !existsSync(PORT_FILE)) return;
   const previous = Number(readFileSync(PORT_FILE, "utf8").trim());
   const running = Number.isInteger(previous) && previous > 0 ? await whoami(previous) : null;
   if (running && running.build === BUILD) {
@@ -362,6 +368,15 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
     },
   },
   {
+    method: "GET", path: /^\/api\/scope-fft$/, mutate: false,
+    handler: async (_q, res, _p, url) => {
+      const w = (url.searchParams.get("window") ?? C.spectrum.default_window) as WindowName;
+      if (!C.spectrum.windows.includes(w)) throw new HttpError(400, "unknown window");
+      json(res, 200, await scope.scopeFft(String(url.searchParams.get("src") ?? "CHANnel1"), w));
+    },
+  },
+  { method: "POST", path: /^\/api\/scope-fft\/stop$/, mutate: true, handler: async (_q, res) => json(res, 200, await scope.scopeFftStop()) },
+  {
     method: "GET", path: /^\/api\/deep\/export\.csv$/, mutate: false,
     handler: async (_q, res, _p, url) => {
       const s = url.searchParams;
@@ -432,7 +447,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(Number(explicitPort ?? C.server.port), C.server.host, async () => {
+void replacePrevious().then(() => server.listen(Number(explicitPort ?? C.server.port), C.server.host, async () => {
   const port = (server.address() as { port: number }).port;
   const url = `http://${C.server.host}:${port}/`;
   if (!explicitPort) {
@@ -450,7 +465,7 @@ server.listen(Number(explicitPort ?? C.server.port), C.server.host, async () => 
   else if (s.lastKind === "sim") void scope.connect({ sim: true, simModel: s.simModel }).catch(() => {});
   else if (s.lastKind === "usb") void scope.connect({ usb: true, usbId: s.usbId }).catch(() => {});
   else if (s.lastKind === "tcp" && s.host) void scope.connect({ host: s.host, port: s.port, protocol: s.protocol }).catch(() => {});
-});
+}));
 
 let shuttingDown = false;
 const shutdown = () => {

@@ -45,6 +45,18 @@ export function spectrum(v: ArrayLike<number>, dt: number, window: WindowName = 
   return { df, vrms: out, window, enbwHz: win.enbwBins * (1 / (n0 * dt)), n };
 }
 
+/** At most `max` bins for display: the largest of each group, so peaks survive. Returns the bins and their spacing. */
+export function compactBins(vrms: ArrayLike<number>, df: number, max = 4096): { bins: number[]; df: number } {
+  const stride = Math.max(1, Math.ceil(vrms.length / max));
+  const bins: number[] = [];
+  for (let i = 0; i < vrms.length; i += stride) {
+    let m = 0;
+    for (let j = i; j < Math.min(vrms.length, i + stride); j++) m = Math.max(m, vrms[j]);
+    bins.push(m);
+  }
+  return { bins, df: df * stride };
+}
+
 export const dbv = (vrms: number) => 20 * Math.log10(Math.max(vrms, 1e-15));
 
 export type Peak = { hz: number; vrms: number; dbv: number; bin: number };

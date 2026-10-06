@@ -3,7 +3,7 @@
   "app": {
     "id": "mho-studio",
     "name": "MHO Studio",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "icon": "📈",
     "tagline": "Remote bench for RIGOL MHO900 and Teledyne LeCroy X-Stream scopes"
   },
@@ -82,6 +82,11 @@
     "deep_chunk_points": 1000000,
     "analog_channels": 4,
     "run_mode_default": "NORM",
+    "batch_props": 24,
+    "fft_slot": "F8",
+    "fft_poll_ms": 700,
+    "fft_windows": { "hann": "VonHann", "blackman-harris": "BlackmanHarris", "flattop": "FlatTop", "rect": "Rectangular" },
+    "batch_separator": "|",
     "screenshot_setup": "HCSU DEV,PNG,PORT,NET",
     "sim": {
       "_comment": "The simulated LeCroy stands in for an unknown 40 GS/s X-Stream model. Every number here is the simulator's own choice, not a datasheet value of any real model.",

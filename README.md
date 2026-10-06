@@ -47,6 +47,15 @@ brings back the running one. Needs Node 22.18 or newer.
 4. If Windows Firewall asks about Node.js the first time you search the
    network, allow it on **Private networks**.
 
+**Or no installation at all: `MHO Studio.exe`.** One file (about 60–70 MB)
+that carries its own Node.js — copy it to the lab PC and double-click. Build
+it with `cd ui && npm run build`, then `cd packaging && npm install && npm run
+exe` (on Windows; output in `packaging\out`), or download it from the
+**MHO-Studio-windows-exe** artifact of a GitHub Actions run. It reaches scopes
+over the network (LeCroy VICP, RIGOL LAN) and runs both simulators; RIGOL
+**USB** is not inside the .exe (a native driver module cannot be). It is
+unsigned: Windows SmartScreen may ask once (*More info → Run anyway*).
+
 Settings and presets go to `%USERPROFILE%\.config\mho-studio`, the log to
 `%USERPROFILE%\.local\state\mho-studio\server.log`. To run from the folder
 without installing: `run-mho-studio.bat`.
@@ -121,7 +130,14 @@ On a LeCroy the app offers:
   2- or 4-channel interleave, memory management, clear sweeps.
 - **Screenshot** of the scope's display (camera button), **setups** (save,
   load, presets), **measurements** (22 LeCroy parameters with statistics and
-  cross-check), **spectrum**, **deep memory**, console.
+  cross-check), **deep memory**, console.
+- **Spectrum** — besides the live and deep-memory FFTs, **Scope FFT**: the
+  scope transforms its whole record at the full sample rate (math trace F8,
+  your F1–F7 untouched) and only the spectrum crosses the network, so a live
+  spectrum of a fast signal does not alias. The app finds peaks and THD in it.
+- **Fast on a slow link** — the values the app re-reads every few seconds
+  travel in one VBS query instead of one each; deep memory of 8-bit data
+  travels as bytes (half the size), as 16-bit words when averaging adds bits.
 
 Not offered on a LeCroy: Bode sweep (no built-in generator), bus decode and
 logic channels, math panel — those views are not shown. Settings the app has no
@@ -175,7 +191,8 @@ Keys: <kbd>Space</kbd> run/stop, <kbd>S</kbd> single, <kbd>A</kbd> autoset,
 ## Tests
 
 ```bash
-cd server && npm test        # core, service over TCP, over virtual USB-TMC, over VICP to the simulated LeCroy, discovery (94 tests)
+cd server && npm test        # core, service over TCP, over virtual USB-TMC, over VICP to the simulated LeCroy, discovery (97 tests)
+cd server && npm run typecheck   # server, simulators and core (uses the TypeScript installed in ui/)
 cd ui && npx playwright test # 14 UI flows × 2 themes (27 runs, 3 skipped by design), axe, fold probe at 1366×768 / 1440×900
 ```
 
@@ -225,7 +242,11 @@ cd ui && npx playwright test # 14 UI flows × 2 themes (27 runs, 3 skipped by de
 - The first UI test ("scope: live traces…") has failed twice without a
   reproducible cause: once in four runs in September, and once (daylight theme,
   right after the LeCroy test) in three full runs on 2026-10-06; it did not
-  recur in four focused repeats.
+  recur in seven further full runs and four focused repeats. Its error text was
+  lost both times; CI now keeps the trace of any failed UI test as an artifact.
+- **Scope FFT levels** are the instrument's magnitude scaling; the manual does
+  not say whether that is peak or RMS. Frequencies, peaks and THD do not depend
+  on it; compare with a known sine before trusting absolute dBV.
 - The server logs connections, lost links and unanswered queries to
   `~/.local/state/mho-studio/server.log` — look there first if something drops.
 

@@ -29,3 +29,7 @@ __pycache__/
 # --- the programming guide's text is extracted locally, never committed ---
 *.pdf
 pg.txt
+
+# --- packaging: the built executable and its intermediate files ---
+packaging/build/
+packaging/out/
