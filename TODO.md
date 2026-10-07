@@ -42,6 +42,18 @@
 - `npm run typecheck` for server, simulators and core, in CI; two old type errors fixed (a `pipe` field shadowing Duplex.pipe in the USB stream; an untyped JSON reply).
 - Single-file `MHO Studio.exe` (packaging/build-exe.mjs, Node SEA), built and run in CI on Windows, published as an artifact; checked on macOS here.
 - The occasional first-UI-test failure: not reproduced in 7 full runs; CI now keeps failure traces.
+- Measurements are editable after adding: quantity and channel(s) change in place (table and inspector), statistics restart, readings in flight for the old setting are discarded; "+ Measurement" / "+ Add" buttons.
+
+## Done (0.3.0, 2026-10-07)
+
+- **Edge capture** (Edge capture view, `server/burst.ts`, `core/src/dsp/edges.ts`): one trigger, wait up to N s, record a window, every edge's 10–90 % / 90–10 % time and time from the trigger, statistics, scatter, list, CSV; both families; flags under-sampled edges and channels clipped off the screen. Tested on both simulators (the clock's true 4.95 ns edges) and in the UI.
+- RIGOL deep memory read past the end of the record when the depth setting exceeded rate × span (found by the edge capture): fixed.
+- LeCroy simulator: Normal / Single wait for a real crossing; Single triggers when polled.
+
+## Done (0.3.1, 2026-10-07)
+
+- **WaveRunner 640Zi** (the lab's scope) checked against its datasheet and LeCroy's X-Stream Remote Control Manual (WM-RCM-E rev D): VICP supported; CHDR/CFMT/CORD, WFSU, WF? with headers off, CPL values (and OVL on a 50 Ω overload, now shown), MSIZ, INR bit 0 = new acquisition, CMR/EXR, HCSU/SCDP, PAVA format and names, VBS — as implemented. Fixed from the manual: PWID/NWID do not exist (WID does); screenshot setup made explicit (DEST,REMOTE,AREA,DSOWINDOW).
+- Windows .exe cross-built on macOS (`--target win-x64`, official node.exe, SHA-256 checked); structure verified (PE32+, SEA fuse set, blob resource present) — not yet run on Windows.
 
 ## Doing
 
@@ -49,8 +61,9 @@
 
 ## Next
 
-00. **Push to GitHub once** so the CI runs the tests and the installer on Windows (the only Windows run so far is none). Then install on the Windows 11 PC itself.
-0. **First session on the real LeCroy** (model still unknown; 40 GS/s, Windows, 10+ years old). In this order: Remote = TCPIP (VICP) and port 1861 reachable; `*IDN?` names it and the link pill shows the model; `CHDR OFF` takes effect (values parse; check the log for unanswered queries); traces overlay the scope's own screen (Screenshot) at a few V/div, offsets and timebases — this settles whether a sparsed descriptor's HORIZ_INTERVAL includes the sparsing factor (`pointInterval`) and the sign of TRDL; `HCSU DEV,PNG,PORT,NET` + `SCDP` gives an image (else try BMP: `C.lecroy.screenshot_setup`); `INR?` bit 0 means "new acquisition" (trigger badge); `PAVA?` reply layout; deep capture of a few Mpts (chunk size `lecroy.deep_chunk_points`) and its speed; `PNSU?` round trip; the scope FFT's magnitude scaling (peak or RMS — compare a known sine); whether a VBS line of 24 properties is accepted (lower `lecroy.batch_props` if not); how VBS returns booleans (-1 or True: both are read); which automation properties this model lacks (logged as unanswered) and which trigger types it adds. Record what differs in `sim/README.md` and make `sim/lecroy.ts` match.
+000. **First run on the Windows 11 PC: what failed on 2026-10-07 is not known yet** (asked). Likely causes: GitHub's default branch `main` is still the RIGOL-only 0.1; the installer needs Node 22.18+ and internet for npm; no .exe was available.
+00. **Windows:** the first CI run on windows-latest (2026-10-06, commit de1869d) passed the server tests, type check, all UI tests, the installer and the installed app on the simulated LeCroy; only the .exe step failed — `rcedit` was imported by a name it does not export (fixed; confirm on the next run). Then install on the Windows 11 PC itself.
+0. **First session on the real LeCroy** (model still unknown; 40 GS/s, Windows, 10+ years old). In this order: Remote = TCPIP (VICP) and port 1861 reachable; `*IDN?` names it and the link pill shows the model; `CHDR OFF` takes effect (values parse; check the log for unanswered queries); traces overlay the scope's own screen (Screenshot) at a few V/div, offsets and timebases — this settles whether a sparsed descriptor's HORIZ_INTERVAL includes the sparsing factor (`pointInterval`) and the sign of TRDL; `HCSU DEV,PNG,PORT,NET` + `SCDP` gives an image (else try BMP: `C.lecroy.screenshot_setup`); `INR?` bit 0 means "new acquisition" (trigger badge); `PAVA?` reply layout; deep capture of a few Mpts (chunk size `lecroy.deep_chunk_points`) and its speed; `PNSU?` round trip; an edge capture of a known edge (e.g. the probe-compensation output) to confirm rise times against the scope's own RISE parameter; the scope FFT's magnitude scaling (peak or RMS — compare a known sine); whether a VBS line of 24 properties is accepted (lower `lecroy.batch_props` if not); how VBS returns booleans (-1 or True: both are read); which automation properties this model lacks (logged as unanswered) and which trigger types it adds. Record what differs in `sim/README.md` and make `sim/lecroy.ts` match.
 1. **First session on the real MHO984.** Check, in this order: `*IDN?` and options; WORD byte order is detected and locked (Instrument view); traces overlay the scope's own screen (Screenshot) at several V/div and offsets; `:MEASure:ITEM?` agrees with the cross-check; deep capture of 25 Mpts (is 250 000 points per read accepted? adjust `instrument.raw_chunk_points`); Bode on a known RC. Record anything that differs from the guide in `sim/README.md` and make the simulator match.
 2. **Frame rate on hardware.** If the LAN round trip makes 4 channels slow, read `:WAVeform:PREamble?` only when settings change, or use BYTE for the live view.
 3. **USB on the real scope, continued:** probe every query once (finds all unanswered ones for fw 00.01.00 and any reply that does not match the guide's options); a 25 Mpt deep read over USB; Windows (Zadig/WinUSB) and Linux (udev).

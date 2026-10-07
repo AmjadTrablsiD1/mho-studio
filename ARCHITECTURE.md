@@ -203,6 +203,28 @@ makes a missing reply cost only itself.
    the error text. Broadcasts always publish the mirror's *current* value, so a
    read that raced a write cannot roll the interface back.
 
+## Data flow — edge capture (one event, every edge)
+
+`server/burst.ts`, driven only through the registry and the drivers, so the
+same code runs on both families:
+1. Channels to measure are switched on; an edge trigger is set on the chosen
+   channel by meaning (the option of `trigger.mode` matching "edge", of
+   `trigger.edge.source` matching channel n — `CHANnel2` or `C2` — of the slope
+   matching "pos"/"neg").
+2. Timebase: the smallest 1-2-5 s/div whose 9 divisions after the trigger hold
+   the window; the trigger 1 division from the left (RIGOL: screen centre
+   `timebase.offset`; LeCroy: trigger position `timebase.delay`, negative).
+   Memory as deep as allowed (largest option ≤ the limit), so the sample rate is
+   the highest the window permits.
+3. Single; poll the drivers' status until STOP (the instrument stopped on the
+   event) or the wait runs out (then Stop, and an error that says why).
+4. Deep memory reads every point (`DeepStore.capture`, inside the same busy
+   section). RIGOL deep memory reads only the points the record holds: the
+   smaller of the depth setting and rate × span.
+5. `core/dsp/edges.ts` finds each passage between the 10 % and 90 % levels
+   (hysteresis), interpolates the 10/50/90 % crossings, and summarises; a
+   channel whose record leaves the screen is flagged (clipped edges are fast).
+
 ## Data flow — Bode sweep
 
 `server/bode.ts`: read every setting it will touch; set GEN n to a sine at the
@@ -296,6 +318,7 @@ tested. The UI follows from the registry and the features.
 | LeCroy reads grouped into one VBS line (`return=app.A & "|" & app.B`) | One round trip instead of ~15 per watch cycle; VBS is on every X-Stream scope. A model lacking one property spoils the line: the service falls back to single reads, learns the culprit, and regroups. Decimal commas from a non-English Windows are accepted | Legacy `;`-joined queries (reply framing over VICP not documented) |
 | LeCroy deep memory as bytes when the data has ≤ 8 bits | Half the transfer; NOMINAL_BITS and the channel's averaging decide, words otherwise | Always words |
 | Scope FFT in math slot F8 | Whole record at full rate, no aliasing, little to transfer; F8 leaves the user's F1–F7 alone; switched off when the view is left | Only the app's FFT of a sparsed record |
+| Edge capture through deep memory, edges found in the app | One trigger, the whole record, every edge with a stated method; instruments' own rise-time statistics cover only the screen or need options | Repeated acquisitions with :MEASure statistics (misses a one-time event) |
 | Single-file .exe via Node's SEA: esbuild CJS bundle + interface as assets, unpacked once | No Node install on the lab PC; built and smoke-tested in CI on Windows | pkg/nexe (unmaintained); Electron (large) |
 | Windows: PowerShell installer + shortcut to node.exe, CI on a Windows runner | No Windows machine here; Node and the app are cross-platform, so the risk is in the OS glue, which CI exercises | Electron/MSI packaging (large, and still untestable here) |
 | LeCroy live screen sparsed, deep memory whole | A 40 GS/s record is millions of points; the screen needs ~2000 | Reading every point each frame (seconds per screen) |

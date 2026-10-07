@@ -155,7 +155,11 @@ export class RigolDriver implements Driver {
     const srate = parseNumber(await q.query(":ACQuire:SRATe?")) ?? 0;
     const scale = parseNumber(await q.query(":TIMebase:MAIN:SCALe?")) ?? 0;
     const md = parseNumber((await q.query(":ACQuire:MDEPth?")).trim());
-    return { total: md !== null ? md : Math.round(srate * scale * C.instrument.divisions_x) };
+    // The depth setting can exceed what the record holds: when the sample rate is at its
+    // maximum, the screen's time span fills fewer points. Points past the record are not data.
+    const filled = srate > 0 && scale > 0 ? Math.round(srate * scale * C.instrument.divisions_x) : null;
+    const total = md !== null && filled !== null ? Math.min(md, filled) : (md ?? filled ?? 0);
+    return { total };
   }
 
   async deepChunk(src: string, start: number, count: number): Promise<DeepChunk> {

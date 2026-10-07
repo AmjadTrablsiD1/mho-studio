@@ -659,18 +659,47 @@ export class ScopeService {
 
   // ---------------------------------------------------------- measurements
 
-  async addMeasurement(item: string, src1: string, src2?: string): Promise<MeasureRow[]> {
-    this.need();
+  /** A measurement as the instrument on the line can take it, or a 400 saying why not. */
+  private checkSlot(item: string, src1: string, src2: string | undefined): { item: string; src1: string; src2?: string } {
     const m = this.reg.measurements.find((x) => x.item === item);
     if (!m) throw new HttpError(400, `unknown measurement ${item} on this instrument`);
-    if (m.dual && !src2) throw new HttpError(400, `${m.label} needs two sources`);
+    const ok = (s: string) => this.reg.measureSources.includes(s);
+    if (!ok(src1)) throw new HttpError(400, `${src1} cannot be measured on this instrument`);
+    if (m.dual) {
+      const second = src2 && ok(src2) ? src2 : this.reg.measureSources.find((s) => s !== src1);
+      if (!second) throw new HttpError(400, `${m.label} needs two sources`);
+      return { item, src1, src2: second };
+    }
+    return { item, src1 };
+  }
+
+  async addMeasurement(item: string, src1: string, src2?: string): Promise<MeasureRow[]> {
+    this.need();
     if (this.slots.length >= C.measure.max_items) throw new HttpError(400, `at most ${C.measure.max_items} measurements`);
-    if (!/^(CHANnel[1-4]|MATH[1-4]|D\d{1,2})$/.test(src1) || (src2 && !/^(CHANnel[1-4]|MATH[1-4]|D\d{1,2})$/.test(src2))) throw new HttpError(400, "bad source");
-    const slot: Slot = { id: `m${++this.slotSeq}`, item, src1, src2: m.dual ? src2 : undefined };
+    const slot: Slot = { id: `m${++this.slotSeq}`, ...this.checkSlot(item, src1, src2) };
     await this.drv.addMeasurement(slot);
     await this.drainErrors();
     this.slots.push(slot);
     this.stats.set(slot.id, new Stats());
+    await this.readMeasurements();
+    return this.measureRows();
+  }
+
+  /**
+   * Change a measurement in place — its quantity, its source, or both — keeping
+   * its place in the list. Statistics start again: they described the old one.
+   */
+  async updateMeasurement(id: string, patch: { item?: string; src1?: string; src2?: string }): Promise<MeasureRow[]> {
+    this.need();
+    const i = this.slots.findIndex((s) => s.id === id);
+    if (i < 0) throw new HttpError(404, "no such measurement (it may have been removed)");
+    const old = this.slots[i];
+    const slot: Slot = { id, ...this.checkSlot(patch.item ?? old.item, patch.src1 ?? old.src1, patch.src2 ?? old.src2) };
+    this.slots = this.slots.map((s) => (s.id === id ? slot : s));
+    this.stats.set(id, new Stats());
+    this.cross.delete(id);
+    await this.drv.measurementsChanged(this.slots);
+    await this.drainErrors();
     await this.readMeasurements();
     return this.measureRows();
   }
@@ -704,7 +733,10 @@ export class ScopeService {
 
   private async readMeasurements(): Promise<void> {
     for (const s of this.slots) {
-      this.stats.get(s.id)?.add(await this.drv.readMeasurement(s));
+      const v = await this.drv.readMeasurement(s);
+      // Changed or removed while it was being read: this value belongs to what it was, not what it is.
+      if (!this.slots.includes(s)) continue;
+      this.stats.get(s.id)?.add(v);
       this.cross.set(s.id, this.crossCheck(s));
     }
     this.broadcast("measure", this.measureRows());

@@ -10,6 +10,7 @@ import { setUi, useUi, type CursorMode } from "../uistate.ts";
 import { ScopeScreen } from "../scope/ScopeScreen.tsx";
 import { sourceLabel, sourceVar } from "../theme.ts";
 import { Icon } from "../components/Icons.tsx";
+import { ItemSelect, RemoveButton, SourceSelect, addQuick } from "../components/Measurements.tsx";
 
 export function ScopeView() {
   const cursors = useUi((u) => u.cursors);
@@ -29,6 +30,7 @@ export function ScopeView() {
             </button>
           ))}
         </div>
+        <button className="btn small" onClick={() => void addQuick()} title="Add a measurement on the selected channel; change it in its row below" data-test="measure-quick-add">+ Measurement</button>
         <button className={`icon-btn${persistence ? " on" : ""}`} aria-pressed={persistence} aria-label="Persistence" title="Persistence (P)" onClick={() => setUi({ persistence: !persistence })}><Icon.persist /></button>
       </div>
       <div className="pane" style={{ display: "grid", gridTemplateRows: rows ? "minmax(0,1fr) 196px" : "minmax(0,1fr)" }}>
@@ -103,8 +105,9 @@ function MeasureTable() {
     <div className="bottom">
       <div className="bottom-head">
         <span className="section-title" style={{ margin: 0 }}>Measurements</span>
-        <span className="muted" style={{ fontSize: 10 }}>value from :MEASure:ITEM?; statistics over polled values; cross-check computed here from the 1000-point screen record</span>
+        <span className="muted" style={{ fontSize: 10 }}>change a row's quantity or channel in place; value from the instrument; cross-check computed here from the {screenPoints}-point screen record</span>
         <span className="grow" />
+        <button className="btn small" onClick={() => void addQuick()} disabled={rows.length >= C.measure.max_items}>+ Add</button>
         <button className="btn small" onClick={() => void attempt(() => post("measure/reset"))}>Reset statistics</button>
       </div>
       <div className="table-scroll">
@@ -115,7 +118,7 @@ function MeasureTable() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => {
+            {rows.map((r, index) => {
               const m = measurements.find((x) => x.item === r.slot.item);
               const u = m?.unit ?? "";
               const cell = (x: number | null) => {
@@ -125,8 +128,12 @@ function MeasureTable() {
               const dev = r.cross !== null && r.value !== null && r.value !== 0 ? (Math.abs(r.cross - r.value) / Math.abs(r.value)) * 100 : null;
               return (
                 <tr key={r.slot.id}>
-                  <td><span style={{ color: sourceVar(r.slot.src1), fontWeight: 600 }}>{sourceLabel(r.slot.src1)}</span>{r.slot.src2 && <> → <span style={{ color: sourceVar(r.slot.src2), fontWeight: 600 }}>{sourceLabel(r.slot.src2)}</span></>}</td>
-                  <td>{m?.label ?? r.slot.item}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <span className="swatch" style={{ background: sourceVar(r.slot.src1), marginRight: 4, display: "inline-block", verticalAlign: "middle" }} />
+                    <SourceSelect slot={r.slot} index={index} />
+                    {r.slot.src2 && <> → <SourceSelect slot={r.slot} index={index} which="src2" /></>}
+                  </td>
+                  <td style={{ minWidth: 150 }}><ItemSelect slot={r.slot} index={index} /></td>
                   <td className="n" style={{ color: "var(--text)", fontWeight: 600 }}>{cell(r.value)}</td>
                   <td className="n">{cell(r.stats.mean)}</td>
                   <td className="n">{cell(r.stats.min)}</td>
@@ -137,7 +144,7 @@ function MeasureTable() {
                     {cell(r.cross)}
                     {dev !== null && <span className={`badge ${dev < 2 ? "ok" : dev < 10 ? "warn" : "alarm"}`} style={{ marginLeft: 6 }}>{dev < 0.1 ? "<0.1" : dev.toFixed(dev < 10 ? 1 : 0)}%</span>}
                   </td>
-                  <td><button className="icon-btn" style={{ width: 22, height: 22 }} aria-label={`Remove ${m?.label}`} onClick={() => void attempt(() => post("measure/remove", { id: r.slot.id }))}>×</button></td>
+                  <td><RemoveButton slot={r.slot} label={`${m?.label ?? r.slot.item} on ${sourceLabel(r.slot.src1)}`} /></td>
                 </tr>
               );
             })}

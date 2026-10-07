@@ -60,7 +60,7 @@ export const LECROY_CONTROLS: Control[] = [
   ctl({
     id: "channel.coupling", label: "Coupling / input", kind: "enum", header: "C<n>:COUPLING", q: "C<n>:CPL?", w: "C<n>:CPL {v}", suffix: CH, primary: true,
     options: opts(["D1M", "DC 1 MΩ"], ["A1M", "AC 1 MΩ"], ["D50", "DC 50 Ω"], ["GND", "Ground"]),
-    help: "Choices vary by model: the high-bandwidth WaveMasters have only DC 50 Ω and ground. The instrument answers what it set.",
+    help: "Choices vary by model: the high-bandwidth WaveMasters have only DC 50 Ω and ground. The instrument answers OVL when a 50 Ω input was overloaded and disconnected itself.",
   }),
   ctl({ id: "channel.probe", label: "Probe attenuation", kind: "number", unit: "×", header: "C<n>:ATTENUATION", q: "C<n>:ATTN?", w: "C<n>:ATTN {v}", suffix: CH }),
   vb({
@@ -179,7 +179,7 @@ export const LECROY_ACTIONS: Record<string, string> = {
   "common.cls": "*CLS",
 };
 
-/** PARAMETER_VALUE? names, with the app's own computation of each for the cross-check. */
+/** PARAMETER_VALUE? names (remote control manual, PAVA), with the app's own computation of each for the cross-check. */
 export const LECROY_MEASUREMENTS: Measurement[] = [
   { item: "MAX", label: "Maximum", unit: "V", category: "vertical", cross: "VMAX" },
   { item: "MIN", label: "Minimum", unit: "V", category: "vertical", cross: "VMIN" },
@@ -199,8 +199,8 @@ export const LECROY_MEASUREMENTS: Measurement[] = [
   { item: "FALL", label: "Fall time 90–10 %", unit: "s", category: "horizontal", cross: "FTIMe" },
   { item: "RISE28", label: "Rise time 20–80 %", unit: "s", category: "horizontal" },
   { item: "FALL82", label: "Fall time 80–20 %", unit: "s", category: "horizontal" },
-  { item: "PWID", label: "+Width", unit: "s", category: "horizontal", cross: "PWIDth" },
-  { item: "NWID", label: "−Width", unit: "s", category: "horizontal", cross: "NWIDth" },
+  // The remote control manual (Feb 2005) lists one width parameter, WID (at 50 %); no PWID / NWID.
+  { item: "WID", label: "Width (50 %)", unit: "s", category: "horizontal", cross: "PWIDth" },
   { item: "DUTY", label: "Duty cycle", unit: "%", category: "horizontal", percent: true, cross: "PDUTy" },
   { item: "DLY", label: "Delay (trigger to first 50 % crossing)", unit: "s", category: "other" },
 ];

@@ -172,8 +172,9 @@ export function Plot(p: PlotProps) {
           started = true;
         }
       }
-      ctx.stroke();
+      if (s.width !== 0) ctx.stroke(); // width 0: dots only (a scatter)
       if (s.dots) for (let i = 0; i < n; i++) {
+        if (!Number.isFinite(s.y[i])) continue;
         ctx.beginPath();
         ctx.arc(xs(s.x[i]), ys(s.y[i]), 2.4 * k, 0, 2 * Math.PI);
         ctx.fill();

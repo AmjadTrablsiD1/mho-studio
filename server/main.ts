@@ -16,6 +16,7 @@ import type { WindowName } from "../core/src/dsp/window.ts";
 import { HttpError, ScopeService } from "./scope.ts";
 import { DeepStore } from "./deep.ts";
 import { BodeRunner, checkConfig } from "./bode.ts";
+import { BurstRunner, checkBurst } from "./burst.ts";
 import { discover } from "./discover.ts";
 import { listUsb } from "./usbtmc.ts";
 import { deletePreset, expand, listPresets, loadSettings, readPreset, savePreset } from "./store.ts";
@@ -119,6 +120,7 @@ function broadcast(type: string, data: unknown): void {
 const scope = new ScopeService(broadcast);
 const deep = new DeepStore();
 const bode = new BodeRunner();
+const burst = new BurstRunner(deep);
 
 // ------------------------------------------------------------------- http
 
@@ -183,7 +185,7 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
       json(res, 200, { token: TOKEN, header: C.server.token_header });
     },
   },
-  { method: "GET", path: /^\/api\/state$/, mutate: false, handler: async (_q, res) => json(res, 200, { ...scope.snapshot(), bode: bode.state, deep: deep.meta, presets: listPresets() }) },
+  { method: "GET", path: /^\/api\/state$/, mutate: false, handler: async (_q, res) => json(res, 200, { ...scope.snapshot(), bode: bode.state, burst: burst.state, deep: deep.meta, presets: listPresets() }) },
   {
     method: "GET", path: /^\/api\/stream$/, mutate: false,
     handler: async (req, res) => {
@@ -259,6 +261,14 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
     handler: async (req, res) => {
       const b = await body(req);
       json(res, 200, await scope.addMeasurement(String(b.item), String(b.src1), b.src2 ? String(b.src2) : undefined));
+    },
+  },
+  {
+    method: "POST", path: /^\/api\/measure\/update$/, mutate: true,
+    handler: async (req, res) => {
+      const b = await body(req);
+      const str = (x: unknown) => (x === undefined || x === null || x === "" ? undefined : String(x));
+      json(res, 200, await scope.updateMeasurement(String(b.id), { item: str(b.item), src1: str(b.src1), src2: str(b.src2) }));
     },
   },
   { method: "POST", path: /^\/api\/measure\/remove$/, mutate: true, handler: async (req, res) => json(res, 200, await scope.removeMeasurement(String((await body(req)).id))) },
@@ -386,6 +396,28 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
       res.end();
     },
   },
+  // -------------------------------------------------------- edge capture
+  {
+    method: "POST", path: /^\/api\/burst\/start$/, mutate: true,
+    handler: async (req, res) => {
+      const cfg = checkBurst(await body(req));
+      if (!scope.ready) throw new HttpError(409, "not connected to an oscilloscope");
+      if (burst.state.running) throw new HttpError(409, "an edge capture is already running");
+      void burst.run(scope, cfg, (s) => broadcast("burst", s)).then((s) => {
+        if (s.phase === "done") broadcast("deep", deep.meta);
+      });
+      json(res, 200, { started: true });
+    },
+  },
+  { method: "POST", path: /^\/api\/burst\/stop$/, mutate: true, handler: async (_q, res) => (burst.stop(), json(res, 200, { stopping: true })) },
+  {
+    method: "GET", path: /^\/api\/burst\/edges\.csv$/, mutate: false,
+    handler: async (_q, res) => {
+      res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="edges-${stamp()}.csv"`, "Cache-Control": "no-store" });
+      for (const chunk of burst.csv()) if (!res.write(chunk)) await new Promise((r) => res.once("drain", r));
+      res.end();
+    },
+  },
   // ---------------------------------------------------------------- bode
   {
     method: "POST", path: /^\/api\/bode\/start$/, mutate: true,
@@ -473,6 +505,7 @@ const shutdown = () => {
   shuttingDown = true;
   setTimeout(() => process.exit(0), C.server.shutdown_grace_ms).unref();
   bode.stop();
+  burst.stop();
   deep.cancel();
   void scope.stop().finally(() => {
     for (const c of clients) c.end();

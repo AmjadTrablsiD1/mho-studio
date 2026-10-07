@@ -117,13 +117,16 @@ export class LecroySim {
     return c.invert ? -v : v;
   }
 
-  private newAcquisition(): void {
-    this.acq.seed = (this.acq.seed * 1103515245 + 12345) & 0x7fffffff;
-    this.acq.at = Date.now();
-    this.acq.read.clear();
+  /**
+   * A new acquisition when the trigger condition is met. In Normal and Single
+   * a level the signal never crosses means no trigger: the last record stays
+   * and the instrument stays armed (Auto free-runs; force always acquires).
+   */
+  private newAcquisition(force = false): void {
     const T = Math.random() * 1000;
     const m = /^C(\d)$/.exec(this.trsrc);
     let t0 = T;
+    let found = false;
     if (m) {
       const n = Number(m[1]);
       const P = this.sources[n - 1].period;
@@ -137,11 +140,16 @@ export class LecroySim {
         const v = this.shown(n, t);
         if (neg ? prev > level && v <= level : prev < level && v >= level) {
           t0 = t;
+          found = true;
           break;
         }
         prev = v;
       }
     }
+    if (!found && !force && this.trmd !== "AUTO") return;
+    this.acq.seed = (this.acq.seed * 1103515245 + 12345) & 0x7fffffff;
+    this.acq.at = Date.now();
+    this.acq.read.clear();
     this.acq.t0 = t0;
     this.inr |= 1;
     if (this.trmd === "SINGLE") {
@@ -212,7 +220,7 @@ export class LecroySim {
     const map: Record<string, [string, string]> = {
       MAX: ["VMAX", "V"], MIN: ["VMIN", "V"], PKPK: ["VPP", "V"], TOP: ["VTOP", "V"], BASE: ["VBASe", "V"], AMPL: ["VAMP", "V"],
       MEAN: ["VAVG", "V"], RMS: ["VRMS", "V"], SDEV: ["ACRMs", "V"], OVSP: ["OVERshoot", "%"], OVSN: ["PREShoot", "%"], AREA: ["MARea", "V.S"],
-      PER: ["PERiod", "S"], FREQ: ["FREQuency", "HZ"], RISE: ["RTIMe", "S"], FALL: ["FTIMe", "S"], PWID: ["PWIDth", "S"], NWID: ["NWIDth", "S"], DUTY: ["PDUTy", "%"],
+      PER: ["PERiod", "S"], FREQ: ["FREQuency", "HZ"], RISE: ["RTIMe", "S"], FALL: ["FTIMe", "S"], WID: ["PWIDth", "S"], DUTY: ["PDUTy", "%"],
     };
     const k = map[item];
     if (!k) return `${item},UNDEF,IV`;
@@ -444,7 +452,11 @@ export class LecroySim {
         return undefined;
       }
       case "TRMD": case "TRIG_MODE":
-        if (q) return this.head("TRMD", this.trmd);
+        if (q) {
+          // Armed for one acquisition: a trigger arrives (the simulated signal is always there).
+          if (this.trmd === "SINGLE" && this.running) this.newAcquisition();
+          return this.head("TRMD", this.trmd);
+        }
         if (!/^(AUTO|NORM|SINGLE|STOP)$/i.test(args)) return void (this.cmr = 5);
         this.trmd = args.toUpperCase();
         this.running = this.trmd !== "STOP";
@@ -486,7 +498,7 @@ export class LecroySim {
         this.running = false;
         return undefined;
       case "FRTR": case "FORCE_TRIGGER":
-        this.newAcquisition();
+        this.newAcquisition(true);
         return undefined;
       case "ASET": case "AUTO_SETUP":
         for (const c of this.ch) c.ofst = 0;
@@ -495,7 +507,7 @@ export class LecroySim {
       case "WAIT":
         return undefined;
       case "HCSU": case "HARDCOPY_SETUP":
-        return q ? this.head("HCSU", "DEV,PNG,PORT,NET") : undefined;
+        return q ? this.head("HCSU", "DEV,PNG,FORMAT,LANDSCAPE,BCKG,BLACK,DEST,REMOTE,AREA,DSOWINDOW") : undefined;
       case "SCDP": case "SCREEN_DUMP":
         return this.screenshot();
       case "PNSU": case "PANEL_SETUP":

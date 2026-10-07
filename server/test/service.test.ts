@@ -66,6 +66,35 @@ test("measurements: the instrument value and the app's cross-check agree", async
   assert.equal(left.length, 1);
 });
 
+test("a measurement can be changed after it was added: quantity, channel, delay pair — in place", async () => {
+  for (const r of scope.measureRows()) await scope.removeMeasurement(r.slot.id);
+  const [a] = await scope.addMeasurement("VPP", "CHANnel1");
+  await scope.addMeasurement("FREQuency", "CHANnel1");
+  const before = scope.measureRows()[0].stats.n;
+  assert.ok(before >= 1);
+  // Change the channel: CH2 is the filtered copy of CH1's 2 Vpp, so the reading changes and the statistics restart.
+  let rows = await scope.updateMeasurement(a.slot.id, { src1: "CHANnel2" });
+  assert.equal(rows[0].slot.id, a.slot.id, "same row, same place");
+  assert.equal(rows[0].slot.src1, "CHANnel2");
+  assert.equal(rows[0].stats.n, 1, "statistics start again");
+  // Change the quantity.
+  rows = await scope.updateMeasurement(a.slot.id, { item: "PERiod" });
+  assert.equal(rows[0].slot.item, "PERiod");
+  assert.ok(Math.abs(rows[0].value! - 2e-4) < 2e-6, `period ${rows[0].value}`);
+  // A two-source quantity gets a second channel; then that one can be changed too.
+  rows = await scope.updateMeasurement(a.slot.id, { item: "RRDelay" });
+  assert.ok(rows[0].slot.src2 && rows[0].slot.src2 !== rows[0].slot.src1);
+  rows = await scope.updateMeasurement(a.slot.id, { src2: "CHANnel1" });
+  assert.equal(rows[0].slot.src2, "CHANnel1");
+  // The instrument measures what the list says (the guide's delete-all, then each again).
+  const sim = (scope as unknown as { sim: { scope: { log: string[] } } }).sim.scope;
+  assert.ok(sim.log.some((l) => /^:MEASure:ITEM RRDelay,CHANnel2,CHANnel1$/i.test(l)), "instrument told the new pair");
+  await assert.rejects(scope.updateMeasurement(a.slot.id, { item: "NOPE" }), /unknown measurement/);
+  await assert.rejects(scope.updateMeasurement("m999", { item: "VPP" }), /no such measurement/);
+  for (const r of scope.measureRows()) await scope.removeMeasurement(r.slot.id);
+  assert.equal(scope.measureRows().length, 0);
+});
+
 test("console sends raw SCPI and reports the error queue", async () => {
   const r = await scope.console(":TIMebase:SCALe?");
   assert.equal(Number(r.reply), 1e-4);

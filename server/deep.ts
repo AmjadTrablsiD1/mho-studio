@@ -23,12 +23,13 @@ export class DeepStore {
     this.cancelled = true;
   }
 
-  async capture(scope: ScopeService, srcs: string[], maxPoints: number, resume: boolean, progress: (p: DeepProgress) => void): Promise<DeepMeta> {
+  /** `inBusy`: the caller already holds the busy lock (an edge capture reads its record through here). */
+  async capture(scope: ScopeService, srcs: string[], maxPoints: number, resume: boolean, progress: (p: DeepProgress) => void, inBusy = false): Promise<DeepMeta> {
     if (!srcs.length) throw new HttpError(400, "choose at least one channel");
     for (const s of srcs) if (!/^CHANnel[1-4]$/.test(s)) throw new HttpError(400, `deep memory reads analog channels only (${s})`);
     const limit = Math.max(1000, Math.min(Math.round(maxPoints) || C.deep.max_points_per_channel, C.deep.max_points_per_channel));
     this.cancelled = false;
-    return scope.withBusy("deep capture", async () => {
+    const body = async () => {
       const wasRunning = scope.status !== "STOP";
       const drv = scope.drv;
       const next = new Map<string, Uint16Array>();
@@ -65,7 +66,8 @@ export class DeepStore {
       const p0 = channels[0].pre;
       this.meta = { channels, capturedAt: new Date().toISOString(), points: total, xinc: p0.xinc, xorigin: p0.xorigin, seconds: (Date.now() - t0) / 1000 };
       return this.meta;
-    });
+    };
+    return inBusy ? body() : scope.withBusy("deep capture", body);
   }
 
   private channel(src: string): { c: Uint16Array; pre: Preamble } {

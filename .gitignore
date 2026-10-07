@@ -33,3 +33,4 @@ pg.txt
 # --- packaging: the built executable and its intermediate files ---
 packaging/build/
 packaging/out/
+packaging/cache/

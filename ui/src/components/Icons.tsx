@@ -12,6 +12,9 @@ export const Icon = {
   bode: () => (
     <svg viewBox="0 0 16 16" {...P}><path d="M2 4h5c2 0 3 2 4 5l2 5" /><path d="M2 10h4c3 0 4 1 8-2" strokeDasharray="1.5 2" /></svg>
   ),
+  edges: () => (
+    <svg viewBox="0 0 16 16" {...P}><path d="M1.5 12h2.5l1-8h2.5l1 8h2.5l1-8h2.5" /><path d="M1.5 14.5h13" strokeDasharray="1.5 2" /></svg>
+  ),
   deep: () => (
     <svg viewBox="0 0 16 16" {...P}><path d="M2 8h1.5l1-4 1.5 8 1.5-9 1.5 10 1.5-7 1 2H14" /><path d="M1.5 14.5h13" /></svg>
   ),

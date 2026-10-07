@@ -4,6 +4,10 @@
 //
 //   cd ui && npm run build          (the interface must be built first)
 //   cd packaging && npm install && npm run exe
+//   npm run exe -- --target win-x64  (on a Mac or Linux: the Windows .exe, from the
+//                                     official node.exe of the same Node version,
+//                                     checked against nodejs.org's SHA-256 list;
+//                                     without the custom icon, which needs Windows)
 //
 // How (Node's "single executable application" feature):
 //  1. esbuild bundles server/main.ts and everything it imports into one
@@ -31,7 +35,14 @@ const dist = join(repo, "ui", "dist");
 const work = join(repo, "packaging", "build");
 const outDir = join(repo, "packaging", "out");
 const C = JSON.parse(readFileSync(join(repo, "shared", "constants.json"), "utf8"));
-const win = process.platform === "win32";
+const host = `${process.platform === "win32" ? "win" : process.platform}-${process.arch}`;
+const ti = process.argv.indexOf("--target");
+const target = ti > 0 ? process.argv[ti + 1] : host;
+if (target !== host && target !== "win-x64") {
+  console.error(`can build for this machine (${host}) or --target win-x64, not ${target}`);
+  process.exit(1);
+}
+const win = target.startsWith("win");
 const exe = join(outDir, win ? `${C.app.name}.exe` : C.app.name);
 
 const step = (s) => console.log(`\n== ${s}`);
@@ -112,22 +123,58 @@ const config = join(work, "sea-config.json");
 writeFileSync(config, JSON.stringify({ main: bundle, output: blob, disableExperimentalSEAWarning: true, useCodeCache: false, useSnapshot: false, assets }, null, 2));
 execFileSync(process.execPath, ["--experimental-sea-config", config], { stdio: "inherit" });
 rmSync(exe, { force: true });
-copyFileSync(process.execPath, exe);
+copyFileSync(target === host ? process.execPath : await windowsNode(), exe);
 chmodSync(exe, 0o755); // the installed node binary may be read-only, and the copy keeps that
-if (win) {
-  const { rcedit } = await import("rcedit");
-  await rcedit(exe, {
-    icon: join(repo, "branding", "icon.ico"),
-    "version-string": { ProductName: C.app.name, FileDescription: C.app.tagline, CompanyName: "", LegalCopyright: "" },
-    "product-version": C.app.version,
-    "file-version": C.app.version,
-  });
+if (win && process.platform === "win32") {
+  // rcedit 4 exports its function as the module itself (CommonJS), not as a named export.
+  const m = await import("rcedit");
+  const rcedit = m.rcedit ?? m.default;
+  try {
+    await rcedit(exe, {
+      icon: join(repo, "branding", "icon.ico"),
+      "version-string": { ProductName: C.app.name, FileDescription: C.app.tagline, CompanyName: "", LegalCopyright: "" },
+      "product-version": C.app.version,
+      "file-version": C.app.version,
+    });
+  } catch (e) {
+    // The icon is a nicety: an .exe without it still works.
+    console.warn(`warning: could not set the icon (${e.message}); the executable keeps Node's icon`);
+  }
+} else if (win) {
+  console.log("note: the custom icon is set only when building on Windows; this .exe keeps Node's icon");
 } else if (process.platform === "darwin") {
   execFileSync("codesign", ["--remove-signature", exe]);
 }
 await inject(exe, "NODE_SEA_BLOB", readFileSync(blob), {
   sentinelFuse: "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
-  ...(process.platform === "darwin" ? { machoSegmentName: "NODE_SEA" } : {}),
+  ...(!win && process.platform === "darwin" ? { machoSegmentName: "NODE_SEA" } : {}),
 });
-if (process.platform === "darwin") execFileSync("codesign", ["--sign", "-", exe]);
+if (!win && process.platform === "darwin") execFileSync("codesign", ["--sign", "-", exe]);
 console.log(`\n${exe}  (${(statSync(exe).size / 1e6).toFixed(0)} MB, Node ${process.versions.node} inside)`);
+
+/**
+ * The official Windows node.exe of exactly this Node version (the blob must
+ * match the binary's version), from nodejs.org, its zip checked against the
+ * published SHA-256 list; kept in packaging/cache.
+ */
+async function windowsNode() {
+  const ver = process.version;
+  const name = `node-${ver}-win-x64`;
+  const cache = join(repo, "packaging", "cache");
+  const out = join(cache, `${name}.exe`);
+  if (existsSync(out)) return out;
+  mkdirSync(cache, { recursive: true });
+  step(`Fetching ${name}.zip from nodejs.org`);
+  const sums = await (await fetch(`https://nodejs.org/dist/${ver}/SHASUMS256.txt`)).text();
+  const want = sums.split("\n").find((l) => l.endsWith(`  ${name}.zip`))?.split(/\s+/)[0];
+  if (!want) throw new Error(`no SHA-256 for ${name}.zip on nodejs.org`);
+  const zip = Buffer.from(await (await fetch(`https://nodejs.org/dist/${ver}/${name}.zip`)).arrayBuffer());
+  const got = createHash("sha256").update(zip).digest("hex");
+  if (got !== want) throw new Error(`${name}.zip: SHA-256 ${got} does not match nodejs.org's ${want}`);
+  console.log(`SHA-256 verified (${(zip.length / 1e6).toFixed(0)} MB)`);
+  const zipPath = join(cache, `${name}.zip`);
+  writeFileSync(zipPath, zip);
+  writeFileSync(out, execFileSync("unzip", ["-p", zipPath, `${name}/node.exe`], { maxBuffer: 1 << 30 }));
+  rmSync(zipPath);
+  return out;
+}

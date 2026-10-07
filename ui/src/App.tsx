@@ -20,6 +20,7 @@ import { DecodeView } from "./views/DecodeView.tsx";
 import { ConsoleView } from "./views/ConsoleView.tsx";
 import { InstrumentView } from "./views/InstrumentView.tsx";
 import { SettingsView } from "./views/SettingsView.tsx";
+import { EdgesView } from "./views/EdgesView.tsx";
 import { useReg } from "./registry.ts";
 import type { Features } from "../../core/src/registry/families.ts";
 
@@ -29,6 +30,7 @@ const VIEWS: { id: View; label: string; icon: () => React.JSX.Element; needs?: k
   { id: "spectrum", label: "Spectrum", icon: Icon.spectrum },
   { id: "bode", label: "Bode sweep", icon: Icon.bode, needs: "generator" },
   { id: "deep", label: "Deep memory", icon: Icon.deep },
+  { id: "edges", label: "Edge capture", icon: Icon.edges },
   { id: "decode", label: "Decode & logic", icon: Icon.decode, needs: "decode" },
   { id: "console", label: "SCPI console", icon: Icon.console },
   { id: "instrument", label: "Instrument", icon: Icon.instrument },
@@ -119,6 +121,7 @@ function ViewHost({ view }: { view: View }) {
     case "spectrum": return <SpectrumView />;
     case "bode": return <BodeView />;
     case "deep": return <DeepView />;
+    case "edges": return <EdgesView />;
     case "decode": return <DecodeView />;
     case "console": return <ConsoleView />;
     case "instrument": return <InstrumentView />;
@@ -240,6 +243,7 @@ function Rail() {
                 <div className="c-tags">
                   {coup && <span className="tag">{coup === "DC" || coup === "D1M" ? "DC" : coup === "AC" || coup === "A1M" ? "AC" : coup === "D50" ? "DC" : "GND"}</span>}
                   {coup === "D50" && <span className="tag" style={{ color: "var(--gold)" }}>50Ω</span>}
+                  {coup === "OVL" && <span className="tag" style={{ color: "var(--coral)" }} title="The 50 Ω input was overloaded and the instrument disconnected it. Reduce the signal, then set the coupling again.">50Ω OVERLOAD</span>}
                   {bw !== "OFF" && <span className="tag">BW {bw}</span>}
                   {imp.startsWith("FIF") && <span className="tag" style={{ color: "var(--gold)" }}>50Ω</span>}
                   {typeof probe === "number" && probe !== 1 && <span className="tag">{probe}×</span>}

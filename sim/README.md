@@ -144,3 +144,10 @@ is selected. Booleans come back as -1 / 0.
   `Operator1Setup.Window`, `View`): the magnitude spectrum of the whole record
   (up to 2^19 points) in RMS volts per bin — the simulator's choice; the
   manual does not state the real instrument's scaling.
+
+### Since 0.3.0
+
+- Trigger in Normal and Single waits for a real crossing of the level: a level
+  the signal never reaches leaves the instrument armed (Auto still free-runs,
+  FRTR always acquires). In Single a `TRMD?` poll lets the trigger arrive, as a
+  live signal would; the instrument then reads STOP.

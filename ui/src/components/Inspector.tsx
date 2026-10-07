@@ -9,6 +9,7 @@ import { fmt } from "../../../core/src/format.ts";
 import { action, attempt, post, readGroup, useLive } from "../api.ts";
 import { setUi, useUi, type Section } from "../uistate.ts";
 import { Ctl, GroupPanel } from "./Controls.tsx";
+import { ItemSelect, RemoveButton, SourceSelect } from "./Measurements.tsx";
 import { sourceLabel } from "../theme.ts";
 import { useReg } from "../registry.ts";
 import type { Features } from "../../../core/src/registry/families.ts";
@@ -294,15 +295,21 @@ function Measure() {
       <div className="section">
         <div className="section-title"><span>Active</span>{rows.length > 0 && <button className="btn small" onClick={() => void attempt(() => post("measure/reset"))}>Reset statistics</button>}</div>
         {rows.length === 0 && <p className="body-text">None yet. They appear under the screen with running statistics and the app's own cross-check.</p>}
-        {rows.map((r) => {
+        {rows.length > 0 && <p className="body-text" style={{ margin: "0 0 4px" }}>Change a row's quantity or channel right here (or in the table under the screen); × removes it.</p>}
+        {rows.map((r, index) => {
           const def = MEASUREMENTS.find((x) => x.item === r.slot.item);
           return (
-            <div key={r.slot.id} className="metric-row">
-              <span>{def?.label} · {sourceLabel(r.slot.src1)}{r.slot.src2 ? `→${sourceLabel(r.slot.src2)}` : ""}</span>
-              <span className="row" style={{ gap: 6 }}>
-                <strong>{fmt(r.value, def?.unit ?? "", 4)}</strong>
-                <button className="icon-btn" style={{ width: 20, height: 20 }} aria-label="Remove" onClick={() => void attempt(() => post("measure/remove", { id: r.slot.id }))}>×</button>
-              </span>
+            <div key={r.slot.id} style={{ display: "grid", gap: 4, padding: "6px 0", borderBottom: "1px solid var(--line)" }} data-test={`m-row-${index}`}>
+              <div className="row" style={{ gap: 4 }}>
+                <div className="grow" style={{ minWidth: 0 }}><ItemSelect slot={r.slot} index={index} /></div>
+                <RemoveButton slot={r.slot} label={`${def?.label ?? r.slot.item} on ${sourceLabel(r.slot.src1)}`} />
+              </div>
+              <div className="row" style={{ gap: 4 }}>
+                <SourceSelect slot={r.slot} index={index} />
+                {r.slot.src2 && <>→<SourceSelect slot={r.slot} index={index} which="src2" /></>}
+                <span className="grow" />
+                <strong className="mono" style={{ fontSize: 12 }}>{fmt(r.value, def?.unit ?? "", 4)}</strong>
+              </div>
             </div>
           );
         })}

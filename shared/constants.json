@@ -3,7 +3,7 @@
   "app": {
     "id": "mho-studio",
     "name": "MHO Studio",
-    "version": "0.2.2",
+    "version": "0.3.1",
     "icon": "📈",
     "tagline": "Remote bench for RIGOL MHO900 and Teledyne LeCroy X-Stream scopes"
   },
@@ -87,7 +87,7 @@
     "fft_poll_ms": 700,
     "fft_windows": { "hann": "VonHann", "blackman-harris": "BlackmanHarris", "flattop": "FlatTop", "rect": "Rectangular" },
     "batch_separator": "|",
-    "screenshot_setup": "HCSU DEV,PNG,PORT,NET",
+    "screenshot_setup": "HCSU DEV,PNG,FORMAT,LANDSCAPE,BCKG,BLACK,DEST,REMOTE,AREA,DSOWINDOW",
     "sim": {
       "_comment": "The simulated LeCroy stands in for an unknown 40 GS/s X-Stream model. Every number here is the simulator's own choice, not a datasheet value of any real model.",
       "idn": "LECROY,WM8ZI-A,LCRY0000SIM,7.9.0",
@@ -132,6 +132,18 @@
     "peaks": 8,
     "harmonics": 10,
     "floor_dbv": -140
+  },
+  "burst": {
+    "_comment": "Edge capture: one trigger, one long record, every edge measured (server/burst.ts, core/src/dsp/edges.ts).",
+    "default_wait_s": 10,
+    "max_wait_s": 3600,
+    "default_window_s": 0.0001,
+    "max_window_s": 100,
+    "pre_trigger_div": 1,
+    "poll_ms": 100,
+    "max_edges": 1000000,
+    "ui_edges": 2000,
+    "min_samples_per_edge": 3
   },
   "bode": {
     "start_hz": 100,

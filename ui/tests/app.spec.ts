@@ -115,10 +115,41 @@ test("measure: add frequency and Vpp; values, statistics and cross-check appear"
   await page.getByTestId("measure-item").selectOption("VPP");
   await page.getByTestId("measure-add").click();
   const table = page.getByTestId("measure-table");
-  await expect(table).toContainText(/Frequency(5|4\.99\d*|5\.00\d*)kHz/);
-  await expect(table).toContainText(/Peak-peak2\.0\d*V/);
+  const current = (i: number) => table.locator("tbody tr").nth(i).locator("td").nth(2);
+  await expect(table.getByTestId("m-item-0")).toHaveValue("FREQuency");
+  await expect(current(0)).toHaveText(/^(5|4\.99\d*|5\.00\d*)kHz$/);
+  await expect(table.getByTestId("m-item-1")).toHaveValue("VPP");
+  await expect(current(1)).toHaveText(/^2\.0\d*V$/);
   await expect(table.locator(".badge").first()).toBeVisible();
   await page.screenshot({ path: `${shots}measure-${theme}.png` });
+});
+
+test("measure: a row's channel and quantity can be changed after adding it, and the row removed", async ({ page }, info) => {
+  await open(page, info.project.metadata.theme as string, "scope");
+  await page.getByTestId("measure-quick-add").click();
+  const table = page.getByTestId("measure-table");
+  const row = table.locator("tbody tr").first();
+  const current = row.locator("td").nth(2);
+  await expect(table.getByTestId("m-item-0")).toHaveValue("VPP");
+  await expect(current).toHaveText(/^2\.0\d*V$/); // CH1: the generator, 2 Vpp
+  // Change the channel: CH3 is the 3.3 V clock.
+  await table.getByTestId("m-src1-0").selectOption("CHANnel3");
+  await expect(current).toHaveText(/^3\.\d+V$/);
+  // Change the quantity: the clock is 1 MHz.
+  await table.getByTestId("m-item-0").selectOption("FREQuency");
+  await expect(current).toHaveText(/^(1|0\.99\d*|1\.00\d*)MHz$/);
+  // A two-channel quantity gets a second channel picker, which can be changed too.
+  await table.getByTestId("m-item-0").selectOption("RRDelay");
+  await expect(table.getByTestId("m-src2-0")).toBeVisible();
+  await table.getByTestId("m-src2-0").selectOption("CHANnel2");
+  await expect(table.getByTestId("m-src2-0")).toHaveValue("CHANnel2");
+  // The inspector shows the same row, editable there as well.
+  await page.getByTestId("sec-measure").click();
+  await expect(page.locator(".inspector").getByTestId("m-item-0")).toHaveValue("RRDelay");
+  await page.locator(".inspector").getByTestId("m-src1-0").selectOption("CHANnel1");
+  await expect(table.getByTestId("m-src1-0")).toHaveValue("CHANnel1");
+  await row.getByRole("button", { name: /^Remove/ }).click();
+  await expect(table).toHaveCount(0);
 });
 
 test("generator: switching an output on asks first, and the answer is honoured", async ({ page }, info) => {
@@ -302,4 +333,25 @@ test("LeCroy: the simulated X-Stream over VICP — traces, family-only views, co
     await api(page, "connect", { sim: true, simModel: "rigol" });
   }
   await expect(page.getByTestId("link-pill")).toContainText("MHO984");
+});
+
+test("edge capture: one trigger on the clock, every edge's rise time listed, CSV offered", async ({ page }, info) => {
+  await open(page, info.project.metadata.theme as string, "edges");
+  await page.getByTestId("burst-trigger").selectOption("3");
+  await page.getByTestId("burst-level").fill("1.65");
+  await page.getByTestId("burst-window").selectOption(String(10e-6));
+  await page.getByTestId("burst-ch-1").uncheck();
+  await page.getByTestId("burst-ch-3").check();
+  await page.getByTestId("burst-start").click();
+  await expect(page.getByTestId("burst-status")).toContainText("done", { timeout: 30_000 });
+  const card = page.getByTestId("burst-result-3");
+  await expect(card).toContainText(/CH3 · (19|20|21) rising/i);
+  // The simulated clock's edges: about 4.9 ns 10–90 %.
+  await expect(page.getByTestId("burst-rise")).toContainText(/4\.[6-9]\d* ns|5\.[0-2]\d* ns/);
+  await expect(page.getByTestId("burst-edges").locator("tbody tr").first()).toBeVisible();
+  await expect(page.getByTestId("edges-csv")).toHaveAttribute("href", "./api/burst/edges.csv");
+  await axe(page, `edges/${info.project.metadata.theme}`);
+  await page.screenshot({ path: `${shots}edges-${info.project.metadata.theme}.png` });
+  await api(page, "measure/reset");
+  await api(page, "console", { cmd: ":RUN" });
 });

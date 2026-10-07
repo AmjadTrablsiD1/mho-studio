@@ -49,6 +49,25 @@ export type BodeState = {
   startedAt: string | null;
   notes: string[];
 };
+export type Summary = { n: number; min: number | null; mean: number | null; max: number | null; std: number | null };
+export type Edge = { i: number; t: number; kind: "rise" | "fall"; dur: number; under: boolean };
+export type BurstResult = {
+  ch: number; src: string; edges: Edge[]; shown: number; rises: Summary; falls: Summary; periods: Summary;
+  counts: { rise: number; fall: number; under: number }; truncated: boolean; dt: number; flat: boolean; offScreen: boolean;
+  levels: { top: number; base: number; lo: number; mid: number; hi: number };
+};
+export type BurstState = {
+  running: boolean;
+  phase: "idle" | "setting up" | "waiting for trigger" | "reading" | "analysing" | "done" | "stopped" | "error";
+  config: { trigger: number; slope: "rise" | "fall"; level: number | null; waitS: number; windowS: number; channels: number[]; maxPoints: number } | null;
+  startedAt: string | null;
+  triggeredAfterS: number | null;
+  error: string | null;
+  notes: string[];
+  setup: { timeDiv: number; sampleRate: number | null; points: number | null; windowS: number; dt: number | null } | null;
+  progress: DeepProgress | null;
+  results: BurstResult[];
+};
 export type DeepMeta = { channels: { src: string; points: number; pre: { xinc: number; xorigin: number } }[]; capturedAt: string; points: number; xinc: number; xorigin: number; seconds: number };
 export type DeepProgress = { src: string; done: number; total: number; channel: number; channels: number; bytesPerSec: number };
 export type Preset = { name: string; savedAt: string; model: string; firmware: string; bytes: number };
@@ -70,6 +89,7 @@ export type Live = {
   traffic: Traffic[];
   stats: LinkStats | null;
   bode: BodeState | null;
+  burst: BurstState | null;
   deep: DeepMeta | null;
   deepProgress: DeepProgress | null;
   presets: Preset[];
@@ -92,6 +112,7 @@ let state: Live = {
   traffic: [],
   stats: null,
   bode: null,
+  burst: null,
   deep: null,
   deepProgress: null,
   presets: [],
@@ -263,6 +284,7 @@ export async function connectStream(): Promise<void> {
   on<{ counter: number | null; dvm: number | null }>("readings", (readings) => set({ readings }));
   on<LinkStats>("stats", (stats) => set({ stats }));
   on<BodeState>("bode", (bode) => set({ bode }));
+  on<BurstState>("burst", (burst) => set({ burst }));
   on<DeepMeta>("deep", (deep) => set({ deep, deepProgress: null }));
   on<DeepProgress>("deep-progress", (deepProgress) => set({ deepProgress }));
   on<Preset[]>("presets", (presets) => set({ presets }));

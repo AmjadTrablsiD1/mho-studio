@@ -50,8 +50,11 @@ brings back the running one. Needs Node 22.18 or newer.
 **Or no installation at all: `MHO Studio.exe`.** One file (about 60–70 MB)
 that carries its own Node.js — copy it to the lab PC and double-click. Build
 it with `cd ui && npm run build`, then `cd packaging && npm install && npm run
-exe` (on Windows; output in `packaging\out`), or download it from the
-**MHO-Studio-windows-exe** artifact of a GitHub Actions run. It reaches scopes
+exe` (on Windows; output in `packaging\out`) — or on a Mac with
+`npm run exe -- --target win-x64`, which uses the official Windows node.exe
+(checked against nodejs.org's SHA-256 list) and leaves out the custom icon —
+or download it from the **MHO-Studio-windows-exe** artifact of a GitHub
+Actions run. It reaches scopes
 over the network (LeCroy VICP, RIGOL LAN) and runs both simulators; RIGOL
 **USB** is not inside the .exe (a native driver module cannot be). It is
 unsigned: Windows SmartScreen may ask once (*More info → Run anyway*).
@@ -102,6 +105,16 @@ On macOS, if the scope answers `ping` but not the app, allow Node under
 to `/usr/bin/nc`, which is exempt).
 
 ## Connecting a Teledyne LeCroy (X-Stream, Windows-based)
+
+Checked for the **WaveRunner 640Zi** (4 GHz, 20 GS/s on 4 channels / 40 GS/s
+on 2, 8-bit ADC with ERES to 11 bits, 16 Mpts/ch standard, 50 Ω and 1 MΩ
+inputs, Windows 7 Embedded 64-bit): its datasheet lists "VXI-11 or VICP, LXI
+Class C" and gigabit Ethernet, and every command the app sends was checked
+against LeCroy's X-Stream Remote Control Manual (WM-RCM-E rev D) and
+Automation Manual. Not yet run against the instrument itself. Deep memory
+reads at most 25 Mpts per channel (the app's limit), so the M-option memories
+(64/128 Mpts) are read in part.
+
 
 1. LAN cable from the scope to your network, or straight to the computer.
 2. On the scope: **Utilities → Utilities Setup → Remote**, set **Control from**
@@ -163,7 +176,10 @@ for exactly what it models and what it does not.
   Switching a generator output on, 50 Ω input, factory reset, autoset and
   loading setups ask first.
 - **Measurements** — all 41 of the instrument's, with running statistics and
-  an independent cross-check the app computes from the waveform.
+  an independent cross-check the app computes from the waveform. **+ Measurement**
+  adds one on the selected channel; every row's quantity and channel(s) can be
+  changed afterwards in place (in the table under the screen or in the
+  inspector), and × removes it.
 - **Spectrum** — windowed FFT (Hann, Blackman-Harris, flat top, rectangular) in
   dBV RMS, averaging, peak list, THD with harmonics — from the live screen or
   from deep memory.
@@ -171,6 +187,15 @@ for exactly what it models and what it does not.
   auto-ranging, −3 dB corner, CSV export. Your settings are restored afterwards.
 - **Deep memory** — stops the scope and reads up to 25 Mpts per channel;
   zoom through it, measure a range, export CSV.
+- **Edge capture** — for an event that happens **once** (an SPI transfer, a
+  reset, a start-up sequence): arm one edge trigger in Single on the line that
+  starts it, wait for it (as long as you say), record a window after it, read
+  every point, and measure **every edge** of that one record on each chosen
+  channel — 10–90 % rise and 90–10 % fall time, time from the trigger, spacing —
+  with min / mean / max / σ, a plot of each edge's time over the burst, the
+  list, and all edges as CSV. It warns when a channel is clipped off the screen
+  (clipped edges look too fast) or sampled too slowly for its edges. Same on a
+  RIGOL and on a LeCroy; the scope is left stopped on the event.
 - **Decode & logic** — configure bus 1–4 for Parallel, UART, I²C, SPI, CAN, LIN
   (and FlexRay, I²S, 1553 with their options), read the event table; set up the
   16 digital channels.
@@ -191,9 +216,9 @@ Keys: <kbd>Space</kbd> run/stop, <kbd>S</kbd> single, <kbd>A</kbd> autoset,
 ## Tests
 
 ```bash
-cd server && npm test        # core, service over TCP, over virtual USB-TMC, over VICP to the simulated LeCroy, discovery (97 tests)
+cd server && npm test        # core, service over TCP, over virtual USB-TMC, over VICP to the simulated LeCroy, edge capture on both, discovery (112 tests)
 cd server && npm run typecheck   # server, simulators and core (uses the TypeScript installed in ui/)
-cd ui && npx playwright test # 14 UI flows × 2 themes (27 runs, 3 skipped by design), axe, fold probe at 1366×768 / 1440×900
+cd ui && npx playwright test # 17 UI flows × 2 themes (31 runs, 3 skipped by design), axe, fold probe at 1366×768 / 1440×900
 ```
 
 ## Limitations

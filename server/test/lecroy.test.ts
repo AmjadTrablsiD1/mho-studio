@@ -153,6 +153,17 @@ test("measurements come from PARAMETER_VALUE? and agree with the app's own cross
   for (const r of rows) await scope.removeMeasurement(r.slot.id);
 });
 
+test("LeCroy: a measurement's quantity and channel can be changed in place", async () => {
+  const [a] = await scope.addMeasurement("PKPK", "CHANnel1");
+  close(a.value!, 0.8, 0.03, "PKPK CH1");
+  let rows = await scope.updateMeasurement(a.slot.id, { src1: "CHANnel2" });
+  close(rows[0].value!, C.sim.clock_v, 0.8, "PKPK CH2 (the clock)");
+  rows = await scope.updateMeasurement(a.slot.id, { item: "MAX" });
+  assert.equal(rows[0].slot.item, "MAX");
+  await assert.rejects(scope.updateMeasurement(a.slot.id, { src1: "MATH1" }), /cannot be measured/);
+  await scope.removeMeasurement(a.slot.id);
+});
+
 test("run / stop / single map to TRMD; Run returns to the last running mode", async () => {
   await scope.write("trigger.sweep", "NORM");
   await scope.action("root.stop", null);

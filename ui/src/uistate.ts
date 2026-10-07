@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from "react";
 import { C } from "../../core/src/constants.ts";
 
-export type View = "scope" | "spectrum" | "bode" | "deep" | "decode" | "console" | "instrument" | "settings";
+export type View = "scope" | "spectrum" | "bode" | "deep" | "edges" | "decode" | "console" | "instrument" | "settings";
 export type Section = "vertical" | "horizontal" | "trigger" | "acquire" | "measure" | "math" | "generator" | "counter";
 export type CursorMode = "off" | "time" | "volt" | "both";
 
