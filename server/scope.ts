@@ -83,6 +83,18 @@ export class ScopeService {
   drv: Driver = new RigolDriver(this);
   private loopToken = 0;
   private frameDirty = true;
+  /**
+   * Counts setting changes (writes, actions, changes seen at the instrument,
+   * console commands, long jobs). A driver may keep what it read about the
+   * instrument's transfer settings (a preamble) while this stays the same.
+   */
+  settingsGen = 0;
+
+  /** Something changed: draw a fresh frame, and forget cached transfer settings. */
+  private dirty(): void {
+    this.frameDirty = true;
+    this.settingsGen++;
+  }
   private wantConnected = false;
   private orderVotes = 0;
   private slotSeq = 0;
@@ -232,7 +244,7 @@ export class ScopeService {
     await this.readKeys(this.triggerTypeKeys());
     this.status = await this.drv.status();
     this.broadcast("status", this.status);
-    this.frameDirty = true;
+    this.dirty();
   }
 
   /** The control table of the instrument on the line. */
@@ -508,7 +520,7 @@ export class ScopeService {
       return { readback, extra, errors };
     });
     this.broadcast("values", this.current([k, ...Object.keys(result.extra)]));
-    this.frameDirty = true;
+    this.dirty();
     const coerced = !same(v, result.readback);
     return { key: k, requested: v, value: result.readback, coerced, errors: result.errors };
   }
@@ -528,7 +540,7 @@ export class ScopeService {
     const errors = await this.drainErrors();
     this.status = await this.drv.status();
     this.broadcast("status", this.status);
-    this.frameDirty = true;
+    this.dirty();
     return { id, errors, status: this.status };
   }
 
@@ -559,7 +571,7 @@ export class ScopeService {
           if (st !== this.status) {
             this.status = st;
             this.broadcast("status", st);
-            this.frameDirty = true;
+            this.dirty();
           }
         }
         const live = this.status !== "STOP";
@@ -653,7 +665,7 @@ export class ScopeService {
     if (Object.keys(changed).length) {
       if ("trigger.mode" in changed) for (const t of this.triggerTypeKeys()) changed[t] = await this.readKey(t);
       this.broadcast("values", this.current(Object.keys(changed)));
-      this.frameDirty = true;
+      this.dirty();
     }
   }
 
@@ -791,7 +803,7 @@ export class ScopeService {
     const errors = await this.drainErrors();
     await this.readKeys(this.primaryKeys());
     await this.readKeys(this.triggerTypeKeys());
-    this.frameDirty = true;
+    this.dirty();
     return { errors };
   }
 
@@ -826,7 +838,9 @@ export class ScopeService {
       await this.scpi.write(c);
     }
     const errors = await this.drainErrors();
-    this.frameDirty = true;
+    // Anything typed may have changed what the driver last set (waveform source, format, WFSU).
+    this.drv.invalidate?.();
+    this.dirty();
     setTimeout(() => void this.watch().catch(() => {}), 50);
     return { reply, block, errors };
   }
@@ -893,7 +907,7 @@ export class ScopeService {
       return await fn();
     } finally {
       this.busy = null;
-      this.frameDirty = true;
+      this.dirty();
       this.broadcast("busy", null);
     }
   }

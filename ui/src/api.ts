@@ -50,23 +50,40 @@ export type BodeState = {
   notes: string[];
 };
 export type Summary = { n: number; min: number | null; mean: number | null; max: number | null; std: number | null };
-export type Edge = { i: number; t: number; kind: "rise" | "fall"; dur: number; under: boolean };
+export type Edge = { i: number; t: number; kind: "rise" | "fall"; dur: number; under: boolean; seg: number };
+export type Anomaly = { kind: "glitch" | "runt"; polarity: "high" | "low"; t: number; width: number | null; peak: number | null; seg: number };
+export type Histogram = { lo: number; hi: number; counts: number[] };
+export type SegmentRow = { seg: number; rise: number; fall: number; riseMean: number | null; riseMax: number | null; fallMean: number | null; fallMax: number | null; anomalies: number };
 export type BurstResult = {
   ch: number; src: string; edges: Edge[]; shown: number; rises: Summary; falls: Summary; periods: Summary;
-  counts: { rise: number; fall: number; under: number }; truncated: boolean; dt: number; flat: boolean; offScreen: boolean;
+  pulses: { high: Summary; low: Summary }; anomalies: Anomaly[];
+  counts: { rise: number; fall: number; under: number; glitch: number; runt: number }; truncated: boolean; dt: number; flat: boolean; offScreen: boolean;
   levels: { top: number; base: number; lo: number; mid: number; hi: number };
+  hist: { rise: Histogram; fall: Histogram }; slowest: { rise: Edge[]; fall: Edge[] }; perSegment: SegmentRow[];
+};
+export type TimingRow = { t: number; setup: number | null; hold: number | null; seg: number };
+export type TimingResult = {
+  data: number; clock: number; edge: "rise" | "fall"; setup: Summary; hold: Summary; worstSetup: TimingRow | null; worstHold: TimingRow | null;
+  violations: { setup: number; hold: number }; limits: { setup: number | null; hold: number | null }; rows: TimingRow[]; total: number;
+};
+export type BurstConfig = {
+  trigger: number; slope: "rise" | "fall"; level: number | null; waitS: number; windowS: number; channels: number[]; maxPoints: number;
+  base: number | null; top: number | null; segments: number; glitchS: number | null;
+  timing: { clock: number; edge: "rise" | "fall"; setupMin: number | null; holdMin: number | null } | null;
 };
 export type BurstState = {
   running: boolean;
   phase: "idle" | "setting up" | "waiting for trigger" | "reading" | "analysing" | "done" | "stopped" | "error";
-  config: { trigger: number; slope: "rise" | "fall"; level: number | null; waitS: number; windowS: number; channels: number[]; maxPoints: number } | null;
+  config: BurstConfig | null;
   startedAt: string | null;
   triggeredAfterS: number | null;
   error: string | null;
   notes: string[];
-  setup: { timeDiv: number; sampleRate: number | null; points: number | null; windowS: number; dt: number | null } | null;
+  setup: { timeDiv: number; sampleRate: number | null; points: number | null; windowS: number; dt: number | null; segments: number } | null;
   progress: DeepProgress | null;
   results: BurstResult[];
+  timing: TimingResult[];
+  segments: { count: number; recorded: number; times: number[] | null } | null;
 };
 export type DeepMeta = { channels: { src: string; points: number; pre: { xinc: number; xorigin: number } }[]; capturedAt: string; points: number; xinc: number; xorigin: number; seconds: number };
 export type DeepProgress = { src: string; done: number; total: number; channel: number; channels: number; bytesPerSec: number };

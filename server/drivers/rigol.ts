@@ -20,6 +20,10 @@ export class RigolDriver implements Driver {
   private s: ScopeService;
   private deepSrc: string | null = null;
   private deepPre: Preamble | null = null;
+  /** :WAVeform settings last sent (MODE, FORMat, SOURce, STARt, STOP): not sent again while unchanged. */
+  private wav = new Map<string, string>();
+  /** Screen-record preambles per source, with the settings generation and the time they were read. */
+  private pres = new Map<string, { pre: Preamble; gen: number; at: number }>();
 
   constructor(s: ScopeService) {
     this.s = s;
@@ -90,16 +94,45 @@ export class RigolDriver implements Driver {
     return out;
   }
 
-  /** One screen of every visible source (NORMal mode, 1000 points). */
+  /** Send `:WAVeform:<what> <v>` unless that is what was last sent. */
+  private async wset(what: "MODE" | "FORMat" | "SOURce" | "STARt" | "STOP", v: string): Promise<void> {
+    if (this.wav.get(what) === v) return;
+    await this.s.scpi.write(`:WAVeform:${what} ${v}`);
+    this.wav.set(what, v);
+  }
+
+  invalidate(): void {
+    this.wav.clear();
+    this.pres.clear();
+  }
+
+  private async preamble(src: string): Promise<Preamble> {
+    const pre = parsePreamble(await this.s.scpi.query(":WAVeform:PREamble?"));
+    this.pres.set(src, { pre, gen: this.s.settingsGen, at: Date.now() });
+    return pre;
+  }
+
+  /**
+   * One screen of every visible source (NORMal mode, 1000 points). Each source
+   * costs one round trip (DATA?) instead of two: its preamble is read again
+   * only after a setting changed (written here, or seen at the instrument), or
+   * when it is older than C.loops.preamble_max_age_ms (a knob turned at the
+   * instrument shows within that time), or when the data's length disagrees
+   * with it.
+   */
   async frame(srcs: string[]): Promise<Map<string, Record1>> {
     const q = this.s.scpi;
     const out = new Map<string, Record1>();
-    await q.write(`:WAVeform:MODE NORMal`);
-    await q.write(`:WAVeform:FORMat ${C.wire.prefer_word_format ? "WORD" : "BYTE"}`);
+    const format = C.wire.prefer_word_format ? "WORD" : "BYTE";
+    await this.wset("MODE", "NORMal");
+    await this.wset("FORMat", format);
     for (const src of srcs) {
-      await q.write(`:WAVeform:SOURce ${src}`);
-      const pre = parsePreamble(await q.query(":WAVeform:PREamble?"));
+      await this.wset("SOURce", src);
+      const c = this.pres.get(src);
+      const fresh = c && c.gen === this.s.settingsGen && Date.now() - c.at < C.loops.preamble_max_age_ms;
+      let pre = fresh ? c.pre : await this.preamble(src);
       const data = await q.queryBlock(":WAVeform:DATA?", C.instrument.query_timeout_ms * 2);
+      if (fresh && data.length !== pre.points * (format === "WORD" ? 2 : 1)) pre = await this.preamble(src);
       out.set(src, { volts: this.s.decode(data, pre), pre });
     }
     return out;
@@ -107,10 +140,10 @@ export class RigolDriver implements Driver {
 
   async readTrace(src: string): Promise<Record1> {
     const q = this.s.scpi;
-    await q.write(`:WAVeform:SOURce ${src}`);
-    await q.write(`:WAVeform:MODE NORMal`);
-    await q.write(`:WAVeform:FORMat ${C.wire.prefer_word_format ? "WORD" : "BYTE"}`);
-    const pre = parsePreamble(await q.query(":WAVeform:PREamble?"));
+    await this.wset("SOURce", src);
+    await this.wset("MODE", "NORMal");
+    await this.wset("FORMat", C.wire.prefer_word_format ? "WORD" : "BYTE");
+    const pre = await this.preamble(src);
     return { volts: this.s.decode(await q.queryBlock(":WAVeform:DATA?"), pre), pre };
   }
 
@@ -165,14 +198,14 @@ export class RigolDriver implements Driver {
   async deepChunk(src: string, start: number, count: number): Promise<DeepChunk> {
     const q = this.s.scpi;
     if (src !== this.deepSrc) {
-      await q.write(`:WAVeform:SOURce ${src}`);
-      await q.write(":WAVeform:MODE RAW");
-      await q.write(":WAVeform:FORMat WORD");
+      await this.wset("SOURce", src);
+      await this.wset("MODE", "RAW");
+      await this.wset("FORMat", "WORD");
       this.deepSrc = src;
       this.deepPre = null;
     }
-    await q.write(`:WAVeform:STARt ${start + 1}`);
-    await q.write(`:WAVeform:STOP ${start + count}`);
+    await this.wset("STARt", String(start + 1));
+    await this.wset("STOP", String(start + count));
     if (!this.deepPre) this.deepPre = parsePreamble(await q.query(":WAVeform:PREamble?"));
     const d = await q.queryBlock(":WAVeform:DATA?");
     if (!d.length) {
@@ -186,8 +219,8 @@ export class RigolDriver implements Driver {
 
   async deepEnd(resume: boolean, wasRunning: boolean): Promise<void> {
     const q = this.s.scpi;
-    await q.write(":WAVeform:MODE NORMal").catch(() => {});
-    await q.write(":WAVeform:STARt 1").catch(() => {});
+    await this.wset("MODE", "NORMal").catch(() => {});
+    await this.wset("STARt", "1").catch(() => {});
     if (resume && wasRunning) await q.write(":RUN").catch(() => {});
     this.deepSrc = null;
   }

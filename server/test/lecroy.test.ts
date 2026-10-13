@@ -137,6 +137,29 @@ test("a live frame: sparsed to ~2000 points, decoded in volts, screen centre fro
   close(Math.max(...b.volts), C.sim.clock_v, 0.5, "clock high");
 });
 
+test("live frames: one WF? per channel and nothing else while nothing changes", async () => {
+  const sim = (scope as unknown as { sim: { scope: { log: string[] } } }).sim.scope;
+  await scope.write("channel.display@2", true);
+  await scope.frame();
+  await scope.scpi.query("*IDN?");
+  sim.log.length = 0;
+  await scope.frame();
+  await scope.scpi.query("*IDN?"); // the simulator has seen everything before this answer
+  const out = sim.log.filter((l) => l !== "*IDN?");
+  // The same WFSU every frame is not sent again; one descriptor read serves every channel.
+  assert.deepEqual(out, ["C1:WF? ALL", "C2:WF? ALL"]);
+  // After a timebase change: the record size is read again (one DESC), the new sparsing sent once.
+  await scope.write("timebase.scale", 1e-6);
+  sim.log.length = 0;
+  await scope.frame();
+  await scope.scpi.query("*IDN?");
+  const after = sim.log.filter((l) => l !== "*IDN?");
+  assert.equal(after.filter((l) => /WF\? DESC/.test(l)).length, 1, after.join(" | "));
+  assert.equal(after.filter((l) => /WF\? ALL/.test(l)).length, 2);
+  assert.equal(scope.latest.get("CHANnel2")!.volts.length > 1000, true);
+  await scope.write("timebase.scale", 1e-7);
+});
+
 test("measurements come from PARAMETER_VALUE? and agree with the app's own cross-check", async () => {
   await scope.addMeasurement("PKPK", "CHANnel1");
   await scope.addMeasurement("FREQ", "CHANnel1");

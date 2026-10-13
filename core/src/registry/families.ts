@@ -22,6 +22,8 @@ export type Features = {
   compound: boolean;
   /** The instrument computes an FFT the app can read (LeCroy math F8 = FFT). */
   scopeFft: boolean;
+  /** Segmented memory the app can read with each segment's trigger time (LeCroy sequence mode). */
+  segments: boolean;
 };
 
 export type Registry = {
@@ -44,7 +46,7 @@ const RIGOL: Registry = {
   byId: BY_ID,
   measurements: MEASUREMENTS,
   measureSources: [...ANALOG_SOURCES, ...MATH_SOURCES],
-  features: { generator: true, decode: true, math: true, counter: true, options: true, clock: true, compound: true, scopeFft: false },
+  features: { generator: true, decode: true, math: true, counter: true, options: true, clock: true, compound: true, scopeFft: false, segments: false },
   screenPoints: C.instrument.normal_points,
 };
 
@@ -55,7 +57,7 @@ const LECROY: Registry = {
   byId: new Map(LECROY_CONTROLS.map((c) => [c.id, c])),
   measurements: LECROY_MEASUREMENTS,
   measureSources: ANALOG_SOURCES,
-  features: { generator: false, decode: false, math: false, counter: false, options: false, clock: false, compound: false, scopeFft: true },
+  features: { generator: false, decode: false, math: false, counter: false, options: false, clock: false, compound: false, scopeFft: true, segments: true },
   screenPoints: C.lecroy.screen_points,
 };
 

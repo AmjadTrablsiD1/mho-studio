@@ -62,7 +62,8 @@ export class LecroySim {
   private cmr = 0;
   private exr = 0;
   private inr = 0;
-  private acq = { seed: 1, t0: 0, at: 0, read: new Set<number>() };
+  /** The last acquisition: noise seed, when it happened, which channels were read since, and the trigger instant of each segment (one outside sequence mode). */
+  private acq = { seed: 1, t0: 0, at: 0, read: new Set<number>(), trig: [0] as number[] };
   private running = true;
   private sources: Source[];
   /** Every message received, for tests. */
@@ -117,40 +118,55 @@ export class LecroySim {
     return c.invert ? -v : v;
   }
 
+  /** Segments per acquisition: NumSegments in sequence mode, else one. */
+  private segs(): number {
+    if (String(this.props.get("acquisition.horizontal.samplemode")) !== "Sequence") return 1;
+    return Math.max(1, Math.round(Number(this.props.get("acquisition.horizontal.numsegments") ?? 1)));
+  }
+
+  /** The first crossing of the trigger source in the trigger direction within one of its periods after `from`; null when there is none. */
+  private findTrigger(from: number): number | null {
+    const m = /^C(\d)$/.exec(this.trsrc);
+    if (!m) return null;
+    const n = Number(m[1]);
+    const P = this.sources[n - 1].period;
+    const level = this.trlv.get(this.trsrc) ?? 0;
+    const neg = this.trsl.get(this.trsrc) === "NEG";
+    const steps = 4096;
+    let prev = this.shown(n, from);
+    for (let i = 1; i <= steps; i++) {
+      const t = from + (i / steps) * P;
+      const v = this.shown(n, t);
+      if (neg ? prev > level && v <= level : prev < level && v >= level) return t;
+      prev = v;
+    }
+    return null;
+  }
+
   /**
    * A new acquisition when the trigger condition is met. In Normal and Single
    * a level the signal never crosses means no trigger: the last record stays
    * and the instrument stays armed (Auto free-runs; force always acquires).
+   * In sequence mode each further segment waits for the next trigger after the
+   * previous segment's record has ended and the instrument has re-armed.
    */
   private newAcquisition(force = false): void {
     const T = Math.random() * 1000;
-    const m = /^C(\d)$/.exec(this.trsrc);
-    let t0 = T;
-    let found = false;
-    if (m) {
-      const n = Number(m[1]);
-      const P = this.sources[n - 1].period;
-      const level = this.trlv.get(this.trsrc) ?? 0;
-      const neg = this.trsl.get(this.trsrc) === "NEG";
-      // Search one period after T for a crossing in the right direction.
-      const steps = 4096;
-      let prev = this.shown(n, T);
-      for (let i = 1; i <= steps; i++) {
-        const t = T + (i / steps) * P;
-        const v = this.shown(n, t);
-        if (neg ? prev > level && v <= level : prev < level && v >= level) {
-          t0 = t;
-          found = true;
-          break;
-        }
-        prev = v;
-      }
+    const found = this.findTrigger(T);
+    if (found === null && !force && this.trmd !== "AUTO") return;
+    const t0 = found ?? T;
+    const trig = [t0];
+    const { points, dt } = this.timing();
+    const after = Math.max(0, -5 * this.tdiv - this.trdl + points * dt);
+    for (let k = 1; k < this.segs(); k++) {
+      const from = trig[k - 1] + after + S.rearm_s;
+      trig.push(this.findTrigger(from) ?? from);
     }
-    if (!found && !force && this.trmd !== "AUTO") return;
     this.acq.seed = (this.acq.seed * 1103515245 + 12345) & 0x7fffffff;
     this.acq.at = Date.now();
     this.acq.read.clear();
     this.acq.t0 = t0;
+    this.acq.trig = trig;
     this.inr |= 1;
     if (this.trmd === "SINGLE") {
       this.trmd = "STOP";
@@ -164,17 +180,22 @@ export class LecroySim {
     this.acq.read.add(n);
   }
 
-  /** Points [first, first + count·sp) step sp of channel n, as 16-bit codes (8-bit ADC × 256). */
+  /**
+   * Points [first, first + count·sp) step sp of channel n, as 16-bit codes (8-bit ADC × 256).
+   * In sequence mode the index runs over the segments one after another, each `points` long.
+   */
   private codes(n: number, first: number, count: number, sp: number): Int16Array {
-    const { dt } = this.timing();
+    const { dt, points } = this.timing();
     const c = this.ch[n - 1];
     const left = -5 * this.tdiv - this.trdl;
     const out = new Int16Array(count);
     const perDiv = S.codes_per_div / 256;
+    const trig = this.acq.trig;
     for (let k = 0; k < count; k++) {
       const i = first + k * sp;
-      const t = left + i * dt;
-      const v = this.shown(n, this.acq.t0 + t) + S.noise_vrms * gauss(this.acq.seed, n, i);
+      const g = Math.min(trig.length - 1, Math.floor(i / points));
+      const t = left + (i - g * points) * dt;
+      const v = this.shown(n, (trig[g] ?? this.acq.t0) + t) + S.noise_vrms * gauss(this.acq.seed, n, i);
       const code8 = Math.max(-127, Math.min(127, Math.round(((v + c.ofst) / c.vdiv) * perDiv)));
       out[k] = code8 * 256;
     }
@@ -184,7 +205,10 @@ export class LecroySim {
   /** WF? for C n: the descriptor and (unless DESC) the data, as WFSU says. */
   private waveform(n: number, what: string): Uint8Array {
     this.maybeAcquire(n);
-    const { points, dt } = this.timing();
+    const { points: per, dt } = this.timing();
+    // Sequence mode: every segment, one after another (WFSU SN 0 = all segments).
+    const trig = this.acq.trig;
+    const points = per * trig.length;
     const sp = Math.max(1, this.wfsu.sp);
     const fp = Math.min(points - 1, Math.max(0, this.wfsu.fp));
     let count = Math.floor((points - 1 - fp) / sp) + 1;
@@ -197,12 +221,14 @@ export class LecroySim {
     // BYTE: the 8-bit codes themselves, and a gain 256 times larger.
     const byte = this.cfmt === "BYTE";
     const codes = byte ? Int8Array.from(words, (w) => w >> 8) : words;
-    const wave = buildLecroyWave({ codes, gain: byte ? gain * 256 : gain, offset: c.ofst, nominalBits: c.avg > 1 ? 11 : 8, interval: dt * sp, horizOffset: left + fp * dt, source: n - 1, instrument: "LECROYWM8ZI-A", order, firstPoint: fp, sparsing: sp });
+    const segments = trig.length > 1 ? trig.map((t) => ({ time: t - trig[0], offset: left })) : undefined;
+    const wave = buildLecroyWave({ codes, gain: byte ? gain * 256 : gain, offset: c.ofst, nominalBits: c.avg > 1 ? 11 : 8, interval: dt * sp, horizOffset: left + fp * dt, source: n - 1, instrument: "LECROYWM8ZI-A", order, firstPoint: fp, sparsing: sp, segments });
     if (what === "DESC") {
       // A descriptor alone still states how many points a full read would bring.
       const dv = new DataView(wave.buffer);
       dv.setInt32(116, count, order === "little");
       dv.setInt32(60, 0, order === "little");
+      dv.setInt32(48, 0, order === "little");
       return wave.subarray(0, 346);
     }
     return wave;

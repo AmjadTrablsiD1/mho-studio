@@ -337,6 +337,8 @@ test("LeCroy: the simulated X-Stream over VICP — traces, family-only views, co
 
 test("edge capture: one trigger on the clock, every edge's rise time listed, CSV offered", async ({ page }, info) => {
   await open(page, info.project.metadata.theme as string, "edges");
+  // Segments need a LeCroy's sequence mode: not offered on the RIGOL.
+  await expect(page.getByTestId("burst-segments")).toBeDisabled();
   await page.getByTestId("burst-trigger").selectOption("3");
   await page.getByTestId("burst-level").fill("1.65");
   await page.getByTestId("burst-window").selectOption(String(10e-6));
@@ -354,4 +356,48 @@ test("edge capture: one trigger on the clock, every edge's rise time listed, CSV
   await page.screenshot({ path: `${shots}edges-${info.project.metadata.theme}.png` });
   await api(page, "measure/reset");
   await api(page, "console", { cmd: ":RUN" });
+});
+
+test("edge capture on a LeCroy: several segments, glitches, histogram, setup and hold against a clock", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  await open(page, theme, "edges");
+  await api(page, "connect", { sim: true, simModel: "lecroy" });
+  try {
+    await expect(page.getByTestId("link-pill")).toContainText("WM8ZI-A");
+    await expect(page.getByTestId("burst-segments")).toBeEnabled();
+    await page.getByTestId("burst-trigger").selectOption("2");
+    await page.getByTestId("burst-level").fill("1.65");
+    await page.getByTestId("burst-window").selectOption(String(10e-6));
+    await page.getByTestId("burst-segments").fill("3");
+    await page.getByTestId("burst-ch-1").uncheck();
+    await page.getByTestId("burst-ch-3").check();
+    // Every 500 ns pulse of the 1 MHz clock is narrower than 600 ns: all of them are glitches by this rule.
+    await page.getByTestId("burst-glitch").fill("600 ns");
+    await page.getByTestId("burst-timing").check();
+    await page.getByTestId("burst-clock").selectOption("2");
+    await page.getByTestId("burst-setup-min").fill("1 us");
+    await page.getByTestId("burst-start").click();
+    await expect(page.getByTestId("burst-status")).toContainText("done", { timeout: 60_000 });
+    await expect(page.getByTestId("burst-segments-card")).toContainText("3 triggers recorded");
+    const clock = page.getByTestId("burst-result-2");
+    await expect(clock).toContainText(/CH2 · (5[7-9]|6[0-3]) rising/);
+    await expect(page.getByTestId("burst-glitches")).toContainText("glitches");
+    await expect(page.getByTestId("burst-high")).toContainText(/(49\d|50\d)(\.\d+)? ns/);
+    await expect(page.getByTestId("burst-segtable").locator("tbody tr")).toHaveCount(3);
+    await expect(page.getByTestId("burst-hist")).toBeVisible();
+    await expect(page.getByTestId("burst-slowest").locator("tbody tr")).toHaveCount(10);
+    await expect(page.getByTestId("anomalies-csv")).toHaveAttribute("href", "./api/burst/anomalies.csv");
+    await page.getByTestId("burst-tab-timing").click();
+    await expect(page.getByTestId("burst-timing-result-3")).toContainText("against the CH2 clock");
+    await expect(page.getByTestId("burst-violations")).toContainText(/setup < 1 µs: \d+/);
+    await expect(page.getByTestId("burst-timing-rows").locator("tbody tr").first()).toBeVisible();
+    await expect(page.getByTestId("timing-csv")).toHaveAttribute("href", "./api/burst/timing.csv");
+    expect(await pageScrolls(page)).toEqual({ x: false, y: false });
+    await axe(page, `edges-lecroy/${theme}`);
+    await page.screenshot({ path: `${shots}edges-lecroy-${theme}.png` });
+    await page.getByTestId("burst-tab-ch2").click();
+    await page.screenshot({ path: `${shots}edges-lecroy-ch2-${theme}.png`, fullPage: true });
+  } finally {
+    await api(page, "connect", { sim: true, simModel: "rigol" });
+  }
 });

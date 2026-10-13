@@ -11,7 +11,8 @@ import type { WindowName } from "../core/src/dsp/window.ts";
 import { HttpError, type ScopeService } from "./scope.ts";
 
 export type DeepChannel = { src: string; pre: Preamble; points: number };
-export type DeepMeta = { channels: DeepChannel[]; capturedAt: string; points: number; xinc: number; xorigin: number; seconds: number };
+/** points: read per channel; available: what the instrument held (more when the read was capped). */
+export type DeepMeta = { channels: DeepChannel[]; capturedAt: string; points: number; available: number; xinc: number; xorigin: number; seconds: number };
 export type DeepProgress = { src: string; done: number; total: number; channel: number; channels: number; bytesPerSec: number };
 
 export class DeepStore {
@@ -37,8 +38,10 @@ export class DeepStore {
       const t0 = Date.now();
       let bytes = 0;
       let total = 0;
+      let available = 0;
       try {
         const plan = await drv.deepBegin();
+        available = plan.total;
         total = Math.max(1, Math.min(limit, plan.total));
         const chunk = scope.reg.family === "lecroy" ? C.lecroy.deep_chunk_points : C.instrument.raw_chunk_points;
         for (let ci = 0; ci < srcs.length; ci++) {
@@ -64,7 +67,7 @@ export class DeepStore {
       }
       this.data = next;
       const p0 = channels[0].pre;
-      this.meta = { channels, capturedAt: new Date().toISOString(), points: total, xinc: p0.xinc, xorigin: p0.xorigin, seconds: (Date.now() - t0) / 1000 };
+      this.meta = { channels, capturedAt: new Date().toISOString(), points: total, available, xinc: p0.xinc, xorigin: p0.xorigin, seconds: (Date.now() - t0) / 1000 };
       return this.meta;
     };
     return inBusy ? body() : scope.withBusy("deep capture", body);

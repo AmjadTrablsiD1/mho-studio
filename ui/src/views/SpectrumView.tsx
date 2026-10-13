@@ -138,7 +138,7 @@ export function SpectrumView() {
               <div className="empty"><p>Waiting for {sourceLabel(src)}… switch the channel on if it is off.</p></div>
             )}
           </div>
-          <div style={{ display: "grid", gap: 10, alignContent: "start", overflowY: "auto", minHeight: 0 }}>
+          <div style={{ display: "grid", gap: 10, alignContent: "start", gridAutoRows: "max-content", overflowY: "auto", minHeight: 0 }}>
             <div className="card">
               <div className="card-head">Peaks</div>
               <table className="table">

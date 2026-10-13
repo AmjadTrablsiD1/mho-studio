@@ -3,7 +3,7 @@
   "app": {
     "id": "mho-studio",
     "name": "MHO Studio",
-    "version": "0.3.1",
+    "version": "0.3.2",
     "icon": "📈",
     "tagline": "Remote bench for RIGOL MHO900 and Teledyne LeCroy X-Stream scopes"
   },
@@ -99,7 +99,8 @@
       "ch1_sine_hz": 10000000,
       "ch1_vpp": 0.8,
       "ch3_square_hz": 100000,
-      "ch3_vpp": 1
+      "ch3_vpp": 1,
+      "rearm_s": 1e-6
     }
   },
   "wire": {
@@ -110,6 +111,7 @@
   },
   "loops": {
     "live_period_ms": 40,
+    "preamble_max_age_ms": 500,
     "status_period_ms": 250,
     "watch_period_ms": 3000,
     "measure_period_ms": 350,
@@ -143,7 +145,11 @@
     "poll_ms": 100,
     "max_edges": 1000000,
     "ui_edges": 2000,
-    "min_samples_per_edge": 3
+    "min_samples_per_edge": 3,
+    "max_segments": 10000,
+    "ui_rows": 2000,
+    "histogram_bins": 40,
+    "slowest": 5
   },
   "bode": {
     "start_hz": 100,

@@ -109,7 +109,7 @@ Sample rate = memory ÷ (10 × TDIV), at most 40 GS/s.
 
 ## Not modelled
 
-Math, zoom, memories, other trigger types, sequence mode, RIS, roll, ERES,
+Math, zoom, memories, other trigger types, RIS, roll, ERES,
 averaging's effect on the data, digital channels, real timing (it answers in
 ~2 ms), and every VBS property not listed above.
 
@@ -144,6 +144,17 @@ is selected. Booleans come back as -1 / 0.
   `Operator1Setup.Window`, `View`): the magnitude spectrum of the whole record
   (up to 2^19 points) in RMS volts per bin — the simulator's choice; the
   manual does not state the real instrument's scaling.
+
+### Since 0.3.2
+
+- Sequence mode: with `SampleMode = "Sequence"` an acquisition records
+  `NumSegments` segments, each at the next crossing of the trigger level after
+  the previous segment's record has ended and `lecroy.sim.rearm_s` (1 µs) has
+  passed. `WF?` with `WFSU SN,0` returns them back to back (FP and NP count
+  across them), the descriptor's SUBARRAY_COUNT and a TRIGTIME array of (time
+  from the first trigger, time from this trigger to its first point) per
+  segment. Whether the real instrument does exactly this is on the checklist in
+  TODO → Next → 0.
 
 ### Since 0.3.0
 

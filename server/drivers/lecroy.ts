@@ -21,7 +21,7 @@ import { key, type Control } from "../../core/src/registry/controls.ts";
 import { channelOf, registryFor } from "../../core/src/registry/families.ts";
 import { LECROY_ACTIONS } from "../../core/src/registry/lecroy.ts";
 import type { Slot } from "../../core/src/registry/measurements.ts";
-import { CMR, after, decodeLecroyWave, field, lecroyIdn, lecroyNumber, lecroyValue, parsePava, parseWavedesc, preambleOf, type Wavedesc } from "../../core/src/scpi/lecroy.ts";
+import { CMR, after, decodeLecroyWave, field, lecroyIdn, lecroyNumber, lecroyValue, parsePava, parseWavedesc, preambleOf, type SegmentTime, type Wavedesc } from "../../core/src/scpi/lecroy.ts";
 import { makeBlock } from "../../core/src/scpi/block.ts";
 import { encode, type Value } from "../../core/src/scpi/values.ts";
 import type { ScopeService } from "../scope.ts";
@@ -57,6 +57,8 @@ export class LecroyDriver implements Driver {
   private totals = new Map<string, { total: number; bits: number; key: string; at: number }>();
   /** Deep memory read as bytes (8-bit data), half the transfer of words. */
   byteDeep = false;
+  /** The WAVEFORM_SETUP last sent: the live view sends the same one every frame, so it is sent only when it changes. */
+  private wfsuSent: string | null = null;
 
   constructor(s: ScopeService) {
     this.s = s;
@@ -69,6 +71,18 @@ export class LecroyDriver implements Driver {
     await q.write("CORD LO");
     // With headers off, *IDN? answers without its "*IDN " prefix: that is the reply the resync waits for.
     return lecroyIdn(await q.query("*IDN?")).raw;
+  }
+
+  /** WFSU (it applies to every trace) unless it is what was last sent. */
+  private async wfsu(args: string): Promise<void> {
+    if (this.wfsuSent === args) return;
+    await this.s.scpi.write(`WFSU ${args}`);
+    this.wfsuSent = args;
+  }
+
+  invalidate(): void {
+    this.wfsuSent = null;
+    this.totals.clear();
   }
 
   private fill(t: string, n: number | null, v?: string): string {
@@ -175,23 +189,27 @@ export class LecroyDriver implements Driver {
 
   /** Points in the whole record of channel `name` ("C1"), learned from a descriptor and kept while the timebase and memory stay. */
   private async total(name: string): Promise<number> {
-    const k = `${this.s.values.get("timebase.scale")}|${this.s.values.get("acquire.mdepth")}`;
+    const k = `${this.s.settingsGen}|${this.s.values.get("timebase.scale")}|${this.s.values.get("acquire.mdepth")}`;
     const t = this.totals.get(name);
     if (t && t.key === k && Date.now() - t.at < 3000) return t.total;
     const q = this.s.scpi;
-    await q.write("WFSU SP,0,NP,0,FP,0,SN,0");
+    await this.wfsu("SP,0,NP,0,FP,0,SN,0");
     const d = parseWavedesc(await q.queryBlock(`${name}:WF? DESC`, C.instrument.query_timeout_ms * 2));
     const total = Math.max(d.count, d.lastValid - d.firstValid + 1, 0);
     this.totals.set(name, { total, bits: d.nominalBits, key: k, at: Date.now() });
     return total;
   }
 
-  private async record(src: string, sparse: boolean): Promise<Record1> {
+  /**
+   * One record of `src`; sparsed to about C.lecroy.screen_points when `total`
+   * (points in the full record, the same for every displayed channel) is given.
+   */
+  private async record(src: string, total: number | null): Promise<Record1> {
     const q = this.s.scpi;
     const name = lc(src);
-    const total = sparse ? await this.total(name) : 0;
+    const sparse = total !== null;
     const sp = sparse ? Math.max(1, Math.ceil(total / C.lecroy.screen_points)) : 1;
-    await q.write(`WFSU SP,${sp},NP,0,FP,0,SN,0`);
+    await this.wfsu(`SP,${sp},NP,0,FP,0,SN,0`);
     const block = await q.queryBlock(`${name}:WF? ALL`, C.instrument.query_timeout_ms * 4);
     const { desc, volts } = decodeLecroyWave(block);
     const tdiv = this.s.values.get("timebase.scale");
@@ -202,7 +220,9 @@ export class LecroyDriver implements Driver {
 
   async frame(srcs: string[]): Promise<Map<string, Record1>> {
     const out = new Map<string, Record1>();
-    for (const src of srcs) out.set(src, await this.record(src, true));
+    // Every displayed channel holds as many points as the first: one descriptor read (every few seconds) serves them all.
+    const total = srcs.length ? await this.total(lc(srcs[0])) : 0;
+    for (const src of srcs) out.set(src, await this.record(src, total));
     // The screen centre is not a setting on LeCroy: take it from the record (time of first point + half the span).
     const first = out.values().next().value as Record1 | undefined;
     if (first && first.volts.length) {
@@ -213,8 +233,8 @@ export class LecroyDriver implements Driver {
     return out;
   }
 
-  readTrace(src: string): Promise<Record1> {
-    return this.record(src, true);
+  async readTrace(src: string): Promise<Record1> {
+    return this.record(src, await this.total(lc(src)));
   }
 
   async screenshot(): Promise<Uint8Array> {
@@ -272,7 +292,7 @@ export class LecroyDriver implements Driver {
   async deepChunk(src: string, start: number, count: number): Promise<DeepChunk> {
     const q = this.s.scpi;
     const name = lc(src);
-    await q.write(`WFSU SP,0,NP,${count},FP,${start},SN,0`);
+    await this.wfsu(`SP,0,NP,${count},FP,${start},SN,0`);
     const block = await q.queryBlock(`${name}:WF? ALL`, C.instrument.block_timeout_ms);
     const { desc, codes } = decodeLecroyWave(block);
     if (!codes.length) throw new HttpError(502, `the scope returned no data for ${name} points ${start}–${start + count - 1}`);
@@ -284,7 +304,7 @@ export class LecroyDriver implements Driver {
 
   async deepEnd(resume: boolean, wasRunning: boolean): Promise<void> {
     const q = this.s.scpi;
-    await q.write("WFSU SP,0,NP,0,FP,0,SN,0").catch(() => {});
+    await this.wfsu("SP,0,NP,0,FP,0,SN,0").catch(() => {});
     if (this.byteDeep) await q.write("CFMT DEF9,WORD,BIN").catch(() => {});
     this.byteDeep = false;
     if (resume && wasRunning) await q.write(`TRMD ${this.runMode}`).catch(() => {});
@@ -311,9 +331,25 @@ export class LecroyDriver implements Driver {
       }
       this.fftKey = key;
     }
-    await q.write("WFSU SP,0,NP,0,FP,0,SN,0");
+    await this.wfsu("SP,0,NP,0,FP,0,SN,0");
     const { desc, volts } = decodeLecroyWave(await q.queryBlock(`${F}:WF? ALL`, C.instrument.block_timeout_ms));
     return { df: desc.interval, f0: desc.horizOffset, mag: volts, unit: desc.vertUnit, points: volts.length };
+  }
+
+  /**
+   * Sequence mode: the descriptor's SUBARRAY_COUNT and the TRIGTIME array (one
+   * entry per segment). One data point is enough to bring both.
+   */
+  async segmentTimes(src: string): Promise<{ count: number; times: SegmentTime[] } | null> {
+    const q = this.s.scpi;
+    await this.wfsu("SP,0,NP,1,FP,0,SN,0");
+    try {
+      const { desc, segments } = decodeLecroyWave(await q.queryBlock(`${lc(src)}:WF? ALL`, C.instrument.block_timeout_ms));
+      if (desc.segments <= 1) return null;
+      return { count: desc.segments, times: segments.length === desc.segments ? segments : [] };
+    } finally {
+      await this.wfsu("SP,0,NP,0,FP,0,SN,0").catch(() => {});
+    }
   }
 
   async scopeFftStop(): Promise<void> {

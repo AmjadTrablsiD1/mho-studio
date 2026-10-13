@@ -193,9 +193,16 @@ for exactly what it models and what it does not.
   every point, and measure **every edge** of that one record on each chosen
   channel — 10–90 % rise and 90–10 % fall time, time from the trigger, spacing —
   with min / mean / max / σ, a plot of each edge's time over the burst, the
-  list, and all edges as CSV. It warns when a channel is clipped off the screen
-  (clipped edges look too fast) or sampled too slowly for its edges. Same on a
-  RIGOL and on a LeCroy; the scope is left stopped on the event.
+  list, and all edges as CSV. Also: high and low **pulse widths**, **glitches**
+  (pulses narrower than a width you give) and **runts** (swings that turn back
+  before the far level), a **histogram** of the rise and fall times with the
+  slowest edges and how far each is from the rest, and the **setup and hold**
+  of data lines against a clock (worst case, optional required values,
+  violations; CSV of every clock edge). On a LeCroy, **segments**: one Single
+  records N triggers (sequence mode), each with its time, analysed one by one.
+  It warns when a channel is clipped off the screen (clipped edges look too
+  fast) or sampled too slowly for its edges. The scope is left stopped on the
+  event.
 - **Decode & logic** — configure bus 1–4 for Parallel, UART, I²C, SPI, CAN, LIN
   (and FlexRay, I²S, 1553 with their options), read the event table; set up the
   16 digital channels.
@@ -216,9 +223,9 @@ Keys: <kbd>Space</kbd> run/stop, <kbd>S</kbd> single, <kbd>A</kbd> autoset,
 ## Tests
 
 ```bash
-cd server && npm test        # core, service over TCP, over virtual USB-TMC, over VICP to the simulated LeCroy, edge capture on both, discovery (112 tests)
+cd server && npm test        # core, service over TCP, over virtual USB-TMC, over VICP to the simulated LeCroy, edge capture on both, discovery (122 tests)
 cd server && npm run typecheck   # server, simulators and core (uses the TypeScript installed in ui/)
-cd ui && npx playwright test # 17 UI flows × 2 themes (31 runs, 3 skipped by design), axe, fold probe at 1366×768 / 1440×900
+cd ui && npx playwright test # 18 UI flows × 2 themes (33 runs, 3 skipped by design), axe, fold probe at 1366×768 / 1440×900
 ```
 
 ## Limitations

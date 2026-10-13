@@ -55,6 +55,45 @@ test("a live frame decodes both displayed channels in volts", async () => {
   assert.ok(scope.latest.has("CHANnel2"));
 });
 
+test("live frames: one round trip per channel while nothing changes; a change, or time, brings a fresh preamble", async () => {
+  const { C } = await import("../../core/src/constants.ts");
+  const sent = () => scope.traffic.filter((t) => t.dir === "out").map((t) => t.text);
+  const vpp = () => {
+    const v = scope.latest.get("CHANnel1")!.volts;
+    return Math.max(...v) - Math.min(...v);
+  };
+  await scope.frame();
+  scope.traffic.length = 0;
+  await scope.frame();
+  // Two channels on: two DATA? queries and the source switches between them; no preamble, no repeated MODE or FORMat.
+  let out = sent();
+  assert.equal(out.filter((x) => /PREamble\?/i.test(x)).length, 0, out.join(" | "));
+  assert.equal(out.filter((x) => /DATA\?/i.test(x)).length, 2);
+  assert.ok(!out.some((x) => /:WAVeform:(MODE|FORMat)/i.test(x)), out.join(" | "));
+  // A setting written through the app: the next frame reads both preambles again, and CH1 still shows its 2 Vpp.
+  await scope.write("channel.scale@1", 1);
+  scope.traffic.length = 0;
+  await scope.frame();
+  assert.equal(sent().filter((x) => /PREamble\?/i.test(x)).length, 2);
+  assert.ok(Math.abs(vpp() - 2) < 0.1, `CH1 Vpp ${vpp()} at 1 V/div`);
+  // A knob turned at the instrument (the app does not know yet): shown right within the preamble's maximum age.
+  const sim = (scope as unknown as { sim: { scope: { exec: (m: string) => unknown } } }).sim.scope;
+  sim.exec(":CHANnel1:SCALe 0.5");
+  await new Promise((r) => setTimeout(r, C.loops.preamble_max_age_ms + 50));
+  scope.traffic.length = 0;
+  await scope.frame();
+  assert.equal(sent().filter((x) => /PREamble\?/i.test(x)).length, 2);
+  assert.ok(Math.abs(vpp() - 2) < 0.1, `CH1 Vpp ${vpp()} after the knob`);
+  await scope.write("channel.scale@1", 0.5);
+  // The console may change what the driver last set: it sends everything again afterwards.
+  await scope.console(":WAVeform:MODE RAW");
+  scope.traffic.length = 0;
+  await scope.frame();
+  out = sent();
+  assert.ok(out.includes(":WAVeform:MODE NORMal"), out.join(" | "));
+  assert.equal(scope.latest.get("CHANnel1")!.volts.length, 1000);
+});
+
 test("measurements: the instrument value and the app's cross-check agree", async () => {
   await scope.addMeasurement("FREQuency", "CHANnel1");
   await scope.frame();

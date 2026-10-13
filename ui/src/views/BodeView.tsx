@@ -108,7 +108,7 @@ export function BodeView() {
               )}
             </div>
           </div>
-          <div style={{ display: "grid", gap: 10, alignContent: "start", overflowY: "auto", minHeight: 0 }}>
+          <div style={{ display: "grid", gap: 10, alignContent: "start", gridAutoRows: "max-content", overflowY: "auto", minHeight: 0 }}>
             <div className="card">
               <div className="card-head">Sweep</div>
               <div className="card-body" style={{ display: "grid", gap: 9 }}>

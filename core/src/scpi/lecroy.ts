@@ -102,6 +102,8 @@ export type Wavedesc = {
   lastValid: number;
   firstPoint: number;
   sparsing: number;
+  /** Sequence mode: segments acquired (0 or 1 otherwise). */
+  segments: number;
   gain: number;
   offset: number;
   nominalBits: number;
@@ -152,6 +154,7 @@ export function parseWavedesc(b: Uint8Array, at = findWavedesc(b)): Wavedesc {
     lastValid: i32(128),
     firstPoint: i32(132),
     sparsing: i32(136),
+    segments: i32(144),
     gain: f32(156),
     offset: f32(160),
     nominalBits: i16(172),
@@ -163,14 +166,29 @@ export function parseWavedesc(b: Uint8Array, at = findWavedesc(b)): Wavedesc {
   };
 }
 
-/** The descriptor and the volts of a whole "WF? ALL" reply (block header already removed). */
-export function decodeLecroyWave(b: Uint8Array): { desc: Wavedesc; volts: Float32Array; codes: Int32Array } {
+/**
+ * One entry of the TRIGTIME array, per segment of a sequence acquisition:
+ * `time`, seconds from the first segment's trigger to this one's; `offset`,
+ * seconds from this segment's trigger to its first point (like HORIZ_OFFSET).
+ */
+export type SegmentTime = { time: number; offset: number };
+
+/** The descriptor, the per-segment trigger times and the volts of a whole "WF? ALL" reply (block header already removed). */
+export function decodeLecroyWave(b: Uint8Array): { desc: Wavedesc; volts: Float32Array; codes: Int32Array; segments: SegmentTime[] } {
   const at = findWavedesc(b);
   const d = parseWavedesc(b, at);
-  // Blocks follow the descriptor in template order: USERTEXT, (RES_DESC1), TRIGTIME, RISTIME, (RES_ARRAY1), DATA_ARRAY_1.
+  // Blocks follow the descriptor in template order: USERTEXT, RES_DESC1, TRIGTIME, RISTIME, RES_ARRAY1, DATA_ARRAY_1.
   const dv0 = new DataView(b.buffer, b.byteOffset + at, 346);
   const le = d.order === "little";
-  const res = dv0.getInt32(44, le) + dv0.getInt32(56, le);
+  const resDesc = dv0.getInt32(44, le);
+  const res = resDesc + dv0.getInt32(56, le);
+  // TRIGTIME: 16 bytes per segment, two doubles (trigger time, trigger offset).
+  const segments: SegmentTime[] = [];
+  const tt = at + d.descriptorBytes + d.userText + resDesc;
+  for (let k = 0; k + 16 <= d.trigtime && tt + k + 16 <= b.length; k += 16) {
+    const dv = new DataView(b.buffer, b.byteOffset + tt + k, 16);
+    segments.push({ time: dv.getFloat64(0, le), offset: dv.getFloat64(8, le) });
+  }
   const start = at + d.descriptorBytes + d.userText + d.trigtime + d.ristime + res;
   const width = d.commType === "word" ? 2 : 1;
   const n = Math.max(0, Math.min(d.count, Math.floor((Math.min(d.array1 || b.length, b.length - start)) / width)));
@@ -182,7 +200,7 @@ export function decodeLecroyWave(b: Uint8Array): { desc: Wavedesc; volts: Float3
     codes[i] = c;
     volts[i] = d.gain * c - d.offset;
   }
-  return { desc: d, volts, codes };
+  return { desc: d, volts, codes, segments };
 }
 
 /**
@@ -207,10 +225,15 @@ export function preambleOf(d: Wavedesc, points: number): Preamble {
 }
 
 /** Build a descriptor + data the way the instrument would (the simulator uses this; tests check the round trip). */
-export function buildLecroyWave(o: { codes: Int16Array | Int8Array; gain: number; offset: number; interval: number; horizOffset: number; source: number; instrument: string; order?: "little" | "big"; firstPoint?: number; sparsing?: number; nominalBits?: number }): Uint8Array {
+export function buildLecroyWave(o: {
+  codes: Int16Array | Int8Array; gain: number; offset: number; interval: number; horizOffset: number; source: number; instrument: string;
+  order?: "little" | "big"; firstPoint?: number; sparsing?: number; nominalBits?: number; segments?: SegmentTime[];
+}): Uint8Array {
   const le = (o.order ?? "little") === "little";
   const width = o.codes instanceof Int8Array ? 1 : 2;
-  const out = new Uint8Array(346 + o.codes.length * width);
+  const seg = o.segments ?? [];
+  const tt = 16 * seg.length;
+  const out = new Uint8Array(346 + tt + o.codes.length * width);
   const dv = new DataView(out.buffer);
   const put = (at: number, s: string, n: number) => {
     for (let i = 0; i < Math.min(n, s.length); i++) out[at + i] = s.charCodeAt(i);
@@ -220,6 +243,7 @@ export function buildLecroyWave(o: { codes: Int16Array | Int8Array; gain: number
   dv.setInt16(32, width === 2 ? 1 : 0, le); // COMM_TYPE: 0 byte, 1 word
   dv.setInt16(34, le ? 1 : 0, le);
   dv.setInt32(36, 346, le);
+  dv.setInt32(48, tt, le);
   dv.setInt32(60, o.codes.length * width, le);
   put(76, o.instrument, 16);
   dv.setInt32(116, o.codes.length, le);
@@ -227,6 +251,8 @@ export function buildLecroyWave(o: { codes: Int16Array | Int8Array; gain: number
   dv.setInt32(128, Math.max(0, o.codes.length - 1), le);
   dv.setInt32(132, o.firstPoint ?? 0, le);
   dv.setInt32(136, o.sparsing ?? 1, le);
+  dv.setInt32(144, seg.length, le);
+  dv.setInt16(174, seg.length, le);
   dv.setFloat32(156, o.gain, le);
   dv.setFloat32(160, o.offset, le);
   dv.setInt16(172, o.nominalBits ?? 8, le);
@@ -235,9 +261,14 @@ export function buildLecroyWave(o: { codes: Int16Array | Int8Array; gain: number
   put(196, "V", 48);
   put(244, "S", 48);
   dv.setInt16(344, o.source, le);
+  seg.forEach((g, k) => {
+    dv.setFloat64(346 + 16 * k, g.time, le);
+    dv.setFloat64(346 + 16 * k + 8, g.offset, le);
+  });
+  const d0 = 346 + tt;
   for (let i = 0; i < o.codes.length; i++) {
-    if (width === 2) dv.setInt16(346 + 2 * i, o.codes[i], le);
-    else dv.setInt8(346 + i, o.codes[i]);
+    if (width === 2) dv.setInt16(d0 + 2 * i, o.codes[i], le);
+    else dv.setInt8(d0 + i, o.codes[i]);
   }
   return out;
 }

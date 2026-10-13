@@ -8,6 +8,7 @@ import type { Registry } from "../../core/src/registry/families.ts";
 import type { Slot } from "../../core/src/registry/measurements.ts";
 import type { Value } from "../../core/src/scpi/values.ts";
 import type { Preamble } from "../../core/src/wave/decode.ts";
+import type { SegmentTime } from "../../core/src/scpi/lecroy.ts";
 
 export type InstrumentError = { code: number; message: string };
 export type Record1 = { volts: Float32Array; pre: Preamble };
@@ -52,6 +53,14 @@ export interface Driver {
   scopeFft?(src: string, window: string): Promise<{ df: number; f0: number; mag: Float32Array; unit: string; points: number }>;
   /** Switch that FFT off again. */
   scopeFftStop?(): Promise<void>;
+  /**
+   * Segmented (sequence) acquisitions: how many segments the stopped record of
+   * `src` holds, and each one's trigger time (empty when the instrument does
+   * not say). Null when the record is not segmented.
+   */
+  segmentTimes?(src: string): Promise<{ count: number; times: SegmentTime[] } | null>;
+  /** Forget the transfer settings the driver last sent and skips re-sending (after console commands). */
+  invalidate?(): void;
   /** Console queries that return big data blocks get the long timeout. */
   slowQuery(cmd: string): boolean;
 }

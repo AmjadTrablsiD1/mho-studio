@@ -104,6 +104,15 @@ console's completion.
 3. If running (or a setting changed while stopped): in one exclusive section,
    `:WAVeform:MODE NORMal`, `:WAVeform:FORMat WORD`, then per visible source
    `:WAVeform:SOURce CHANnel2`, `:WAVeform:PREamble?`, `:WAVeform:DATA?`.
+   Round trips are what limit the screen rate over a network, so the driver
+   sends a `:WAVeform:` setting only when it differs from what it last sent,
+   and reuses a source's preamble while `ScopeService.settingsGen` is unchanged
+   (it counts writes, actions, changes the watch sees, console commands, long
+   jobs) and it is younger than `loops.preamble_max_age_ms` — a knob turned at
+   the instrument shows within that time; a data length that disagrees with the
+   preamble also reads it again. Steady state: one `DATA?` per source. The
+   LeCroy driver likewise skips an unchanged `WFSU` and reads the record size
+   (`WF? DESC`) once for all channels: one `WF? ALL` per channel.
 4. `core/scpi/block.ts` frames the `#9…` block by its length; `core/wave/decode.ts`
    turns WORD codes into volts with the preamble: `(code − yorigin − yref) × yinc`.
    The WORD byte order is not in the guide, so `detectWordOrder()` measures it
@@ -224,6 +233,20 @@ same code runs on both families:
 5. `core/dsp/edges.ts` finds each passage between the 10 % and 90 % levels
    (hysteresis), interpolates the 10/50/90 % crossings, and summarises; a
    channel whose record leaves the screen is flagged (clipped edges are fast).
+   The same pass measures pulse widths (50 % to 50 %), flags glitches (pulses
+   narrower than the given width) and runts (past 50 % and back without
+   reaching the far level); `setupHold()` times each data line's transitions
+   against the chosen clock edges. Running statistics use Welford's update and
+   are merged with the pairwise formula, so σ survives a spread a millionth of
+   the mean.
+6. Segments (LeCroy sequence mode, `features.segments`): `acquire.mode` =
+   Sequence and `acquire.segments` = N before Single; the instrument stops after
+   the N-th trigger. Deep memory reads all segments back to back (`WFSU SN,0`);
+   `segmentTimes()` reads SUBARRAY_COUNT and the TRIGTIME array (one point is
+   enough). Each segment is analysed alone, its edge times from its own trigger
+   (TRIGGER_OFFSET), with one set of reference levels from the whole record;
+   statistics are merged. A capture with 1 segment puts Sequence back to Real
+   time.
 
 ## Data flow — Bode sweep
 

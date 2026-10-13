@@ -15,6 +15,16 @@
 //    under-sampled: its duration is then mostly the sample spacing, not the
 //    signal. For a trustworthy 10–90 % time, sample at least ~5× faster than
 //    the edge.
+//  • A pulse is the time between the 50 % crossings of two successive edges
+//    (rise → fall: high pulse; fall → rise: low pulse). With `glitchS` set, a
+//    pulse narrower than it is a glitch.
+//  • A runt is a swing that crosses the 50 % level and turns back to where it
+//    came from without reaching the far reference level (low → above 50 % →
+//    low again without reaching 90 %). Noise and ringing near a rail stay on
+//    their side of 50 % and make no runt.
+//  • Setup and hold (setupHold): for each sampling clock edge, setup is the
+//    time from the last data transition at or before it, hold the time to the
+//    next data transition after it, both between 50 % crossings.
 
 import { extrema, levels as autoLevels, type Levels } from "./measure.ts";
 
@@ -33,6 +43,14 @@ export type Edge = {
 
 export type Summary = { n: number; min: number | null; mean: number | null; max: number | null; std: number | null };
 
+/**
+ * Something that is not a clean edge. Polarity "high": a pulse above the
+ * middle (a positive glitch, or a runt that rose from low); "low": the other
+ * way. `t`: its first 50 % crossing; `width`: between its 50 % crossings;
+ * `peak`: how far a runt got, volts.
+ */
+export type Anomaly = { kind: "glitch" | "runt"; polarity: "high" | "low"; t: number; width: number | null; peak: number | null };
+
 export type EdgeReport = {
   levels: Levels;
   /** At most `maxEdges` edges, in time order. */
@@ -41,33 +59,67 @@ export type EdgeReport = {
   falls: Summary;
   /** Rising-edge to rising-edge spacing. */
   periods: Summary;
-  counts: { rise: number; fall: number; under: number };
+  /** Widths of high pulses (rise → fall) and low pulses (fall → rise), 50 % to 50 %. */
+  pulses: { high: Summary; low: Summary };
+  /** At most `maxEdges` glitches and runts, in time order. */
+  anomalies: Anomaly[];
+  counts: { rise: number; fall: number; under: number; glitch: number; runt: number };
   truncated: boolean;
   dt: number;
   /** Amplitude below this fraction of the record's span → no edges (a flat or noise-only record). */
   flat: boolean;
 };
 
-/** Running min / mean / max / standard deviation without keeping the values. */
+/**
+ * Running min / mean / max / standard deviation without keeping the values.
+ * Welford's update: exact enough when the spread is a millionth of the mean
+ * (picoseconds of jitter on a millisecond period), where a sum of squares
+ * would lose every digit.
+ */
 export class Summer {
   n = 0;
-  private s = 0;
-  private s2 = 0;
+  private mean = 0;
+  private m2 = 0;
   min = Infinity;
   max = -Infinity;
   add(x: number): void {
     this.n++;
-    this.s += x;
-    this.s2 += x * x;
+    const d = x - this.mean;
+    this.mean += d / this.n;
+    this.m2 += d * (x - this.mean);
     if (x < this.min) this.min = x;
     if (x > this.max) this.max = x;
   }
   get summary(): Summary {
     if (!this.n) return { n: 0, min: null, mean: null, max: null, std: null };
-    const mean = this.s / this.n;
-    const v = this.n > 1 ? Math.max(0, (this.s2 - this.n * mean * mean) / (this.n - 1)) : 0;
-    return { n: this.n, min: this.min, mean, max: this.max, std: Math.sqrt(v) };
+    return { n: this.n, min: this.min, mean: this.mean, max: this.max, std: this.n > 1 ? Math.sqrt(Math.max(0, this.m2 / (this.n - 1))) : 0 };
   }
+}
+
+/**
+ * The summary of several sets of values taken together (n, min, mean, max and
+ * sample σ, as if one Summer had seen them all): the pairwise update of Chan
+ * et al., M2 = M2a + M2b + δ²·na·nb / n.
+ */
+export function mergeSummaries(parts: Summary[]): Summary {
+  let n = 0;
+  let mean = 0;
+  let m2 = 0;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const p of parts) {
+    if (!p.n) continue;
+    const pm2 = p.std! ** 2 * (p.n - 1);
+    const d = p.mean! - mean;
+    const total = n + p.n;
+    m2 += pm2 + (d * d * n * p.n) / total;
+    mean += (d * p.n) / total;
+    n = total;
+    min = Math.min(min, p.min!);
+    max = Math.max(max, p.max!);
+  }
+  if (!n) return { n: 0, min: null, mean: null, max: null, std: null };
+  return { n, min, mean, max, std: n > 1 ? Math.sqrt(Math.max(0, m2 / (n - 1))) : 0 };
 }
 
 /** Levels from a given base and top (volts). */
@@ -87,27 +139,70 @@ export function findEdges(
   v: ArrayLike<number>,
   dt: number,
   t0 = 0,
-  opts: { levels?: Levels; maxEdges?: number; minSamples?: number } = {},
+  opts: { levels?: Levels; maxEdges?: number; minSamples?: number; glitchS?: number | null } = {},
 ): EdgeReport {
   const L = opts.levels ?? autoLevels(v);
   const maxEdges = opts.maxEdges ?? 100000;
   const minSamples = opts.minSamples ?? 3;
+  const glitchS = opts.glitchS ?? null;
   const { min, max } = extrema(v);
   const flat = !(L.top - L.base > 0) || !(max - min > 0);
   const edges: Edge[] = [];
   const rises = new Summer();
   const falls = new Summer();
   const periods = new Summer();
-  const counts = { rise: 0, fall: 0, under: 0 };
+  const high = new Summer();
+  const low = new Summer();
+  const anomalies: Anomaly[] = [];
+  const counts = { rise: 0, fall: 0, under: 0, glitch: 0, runt: 0 };
   let lastRise: number | null = null;
+  let last: Edge | null = null;
+  const note = (a: Anomaly) => {
+    counts[a.kind]++;
+    if (anomalies.length < maxEdges) anomalies.push(a);
+  };
+  /** A finished edge: the pulse it closes, and whether that pulse is a glitch. */
+  const pulse = (e: Edge) => {
+    if (last && last.kind !== e.kind) {
+      const w = e.t - last.t;
+      const pol = last.kind === "rise" ? "high" : "low";
+      (pol === "high" ? high : low).add(w);
+      if (glitchS !== null && w < glitchS) note({ kind: "glitch", polarity: pol, t: last.t, width: w, peak: null });
+    }
+    last = e;
+  };
   if (!flat) {
     // state: where the signal last was beyond a reference level; lastLo/lastHi: the last sample at/below 10 % / at/above 90 %.
     let state: "low" | "high" | null = null;
     let lastLo = -1;
     let lastHi = -1;
+    // A possible runt since the signal was last at a rail: its first 50 % crossing away from it, the last one back, and its extreme.
+    let away = -1;
+    let back = -1;
+    let peak = 0;
+    const clear = (x: number) => {
+      away = -1;
+      back = -1;
+      peak = x;
+    };
     for (let i = 0; i < v.length; i++) {
       const x = v[i];
+      if (i > 0 && state !== null) {
+        const p = v[i - 1];
+        const up = p < L.mid && x >= L.mid;
+        const down = p >= L.mid && x < L.mid;
+        if (state === "low") {
+          if (up && away < 0) away = cross(v, i - 1, L.mid);
+          if (down) back = cross(v, i - 1, L.mid);
+          if (x > peak) peak = x;
+        } else {
+          if (down && away < 0) away = cross(v, i - 1, L.mid);
+          if (up) back = cross(v, i - 1, L.mid);
+          if (x < peak) peak = x;
+        }
+      }
       if (x <= L.lo) {
+        if (state === "low" && away >= 0) note({ kind: "runt", polarity: "high", t: t0 + away * dt, width: back > away ? (back - away) * dt : null, peak });
         if (state === "high" && lastHi >= 0) {
           // Falling passage: from the last sample at/above 90 % to this one.
           const a = lastHi;
@@ -121,10 +216,13 @@ export function findEdges(
           counts.fall++;
           if (e.under) counts.under++;
           if (edges.length < maxEdges) edges.push(e);
+          pulse(e);
         }
         state = "low";
         lastLo = i;
+        clear(x);
       } else if (x >= L.hi) {
+        if (state === "high" && away >= 0) note({ kind: "runt", polarity: "low", t: t0 + away * dt, width: back > away ? (back - away) * dt : null, peak });
         if (state === "low" && lastLo >= 0) {
           const a = lastLo;
           const s10 = cross(v, a, L.lo);
@@ -139,11 +237,69 @@ export function findEdges(
           if (lastRise !== null) periods.add(e.t - lastRise);
           lastRise = e.t;
           if (edges.length < maxEdges) edges.push(e);
+          pulse(e);
         }
         state = "high";
         lastHi = i;
+        clear(x);
       }
     }
   }
-  return { levels: L, edges, rises: rises.summary, falls: falls.summary, periods: periods.summary, counts, truncated: counts.rise + counts.fall > edges.length, dt, flat };
+  anomalies.sort((a, b) => a.t - b.t);
+  return {
+    levels: L, edges, rises: rises.summary, falls: falls.summary, periods: periods.summary, pulses: { high: high.summary, low: low.summary },
+    anomalies, counts, truncated: counts.rise + counts.fall > edges.length, dt, flat,
+  };
+}
+
+export type Histogram = { lo: number; hi: number; counts: number[] };
+
+/** `bins` equal bins from the smallest to the largest value (one bin when they are all equal). */
+export function histogram(xs: ArrayLike<number>, bins = 40): Histogram {
+  if (!xs.length) return { lo: 0, hi: 0, counts: [] };
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < xs.length; i++) {
+    if (xs[i] < lo) lo = xs[i];
+    if (xs[i] > hi) hi = xs[i];
+  }
+  const n = hi > lo ? bins : 1;
+  const counts = new Array<number>(n).fill(0);
+  for (let i = 0; i < xs.length; i++) counts[n === 1 ? 0 : Math.min(n - 1, Math.floor(((xs[i] - lo) / (hi - lo)) * n))]++;
+  return { lo, hi, counts };
+}
+
+/** One sampling clock edge: setup from the last data transition before it, hold to the next one after it (null where the record has none). */
+export type TimingRow = { t: number; setup: number | null; hold: number | null };
+
+export type SetupHold = { rows: TimingRow[]; setup: Summary; hold: Summary; worstSetup: TimingRow | null; worstHold: TimingRow | null };
+
+/**
+ * Setup and hold of a data line against the `edge` edges of a clock, both edge
+ * lists in time order and on the same time axis. Every clock edge of that
+ * kind gives a row; the summaries and the worst (smallest) values are taken
+ * over the rows that have the value.
+ */
+export function setupHold(clock: Edge[], data: Edge[], edge: EdgeKind): SetupHold {
+  const rows: TimingRow[] = [];
+  const su = new Summer();
+  const ho = new Summer();
+  let worstSetup: TimingRow | null = null;
+  let worstHold: TimingRow | null = null;
+  let j = -1; // the last data edge at or before the clock edge
+  for (const c of clock) {
+    if (c.kind !== edge) continue;
+    while (j + 1 < data.length && data[j + 1].t <= c.t) j++;
+    const row: TimingRow = { t: c.t, setup: j >= 0 ? c.t - data[j].t : null, hold: j + 1 < data.length ? data[j + 1].t - c.t : null };
+    rows.push(row);
+    if (row.setup !== null) {
+      su.add(row.setup);
+      if (!worstSetup || row.setup < worstSetup.setup!) worstSetup = row;
+    }
+    if (row.hold !== null) {
+      ho.add(row.hold);
+      if (!worstHold || row.hold < worstHold.hold!) worstHold = row;
+    }
+  }
+  return { rows, setup: su.summary, hold: ho.summary, worstSetup, worstHold };
 }

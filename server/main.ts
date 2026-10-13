@@ -411,10 +411,12 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
   },
   { method: "POST", path: /^\/api\/burst\/stop$/, mutate: true, handler: async (_q, res) => (burst.stop(), json(res, 200, { stopping: true })) },
   {
-    method: "GET", path: /^\/api\/burst\/edges\.csv$/, mutate: false,
-    handler: async (_q, res) => {
-      res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="edges-${stamp()}.csv"`, "Cache-Control": "no-store" });
-      for (const chunk of burst.csv()) if (!res.write(chunk)) await new Promise((r) => res.once("drain", r));
+    // edges.csv: every edge; anomalies.csv: glitches and runts; timing.csv: setup and hold at every clock edge.
+    method: "GET", path: /^\/api\/burst\/(edges|anomalies|timing)\.csv$/, mutate: false,
+    handler: async (_q, res, [what]) => {
+      const gen = what === "anomalies" ? burst.anomaliesCsv() : what === "timing" ? burst.timingCsv() : burst.csv();
+      res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${what}-${stamp()}.csv"`, "Cache-Control": "no-store" });
+      for (const chunk of gen) if (!res.write(chunk)) await new Promise((r) => res.once("drain", r));
       res.end();
     },
   },
