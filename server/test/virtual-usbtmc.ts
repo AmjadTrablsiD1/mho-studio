@@ -9,6 +9,10 @@
 //    the host gives up the device answers nothing more until a USB-TMC clear;
 //  • the USB library throws synchronously if the device is released or closed
 //    while a transfer is pending.
+// And one measured on the Teledyne T3DSO1204 (2026-10-14): after a reply that
+// carries a block, the next bulk-IN read returns an empty transfer
+// (`emptyAfterBlock`). With `raw`, the instrument's replies are taken as the
+// exact bytes it sends (the T3DSO simulator builds its own framing).
 
 import { SimScope } from "../../sim/instrument.ts";
 import { makeBlock } from "../../core/src/scpi/block.ts";
@@ -23,11 +27,18 @@ export type VirtualOptions = {
   /** A reply left over from an earlier session, waiting on bulk-IN with an old tag (seen on the MHO984). */
   leftover?: string;
   packet?: number;
+  /** Replies are complete wire bytes (no block wrapping here). */
+  raw?: boolean;
+  /** An empty bulk-IN transfer after each reply that carried a block (T3DSO1204). */
+  emptyAfterBlock?: boolean;
 };
 
-export class VirtualUsbtmc implements BulkPipe {
+/** Anything that executes a program message and returns its replies. */
+export type Instrument = { exec(message: string): (string | Uint8Array)[] };
+
+export class VirtualUsbtmc<S extends Instrument = SimScope> implements BulkPipe {
   readonly maxPacket: number;
-  readonly scope: SimScope;
+  readonly scope: S;
   private readonly opts: Required<VirtualOptions>;
   private incoming: Uint8Array[] = [];
   /** Reply bytes waiting to be asked for (REQUEST_DEV_DEP_MSG_IN). */
@@ -42,10 +53,17 @@ export class VirtualUsbtmc implements BulkPipe {
   requests = 0;
   transfersIn = 0;
   badTags = 0;
+  /** Empty transfers handed out (emptyAfterBlock). */
+  empties = 0;
+  /** The reply now being handed out carries a block. */
+  private hasBlock = false;
 
-  constructor(scope = new SimScope(), opts: VirtualOptions = {}) {
+  constructor(scope: S = new SimScope() as unknown as S, opts: VirtualOptions = {}) {
     this.scope = scope;
-    this.opts = { maxTransfer: opts.maxTransfer ?? 64 * 1024, noEom: opts.noEom ?? false, packet: opts.packet ?? 512, leftover: opts.leftover ?? "" };
+    this.opts = {
+      maxTransfer: opts.maxTransfer ?? 64 * 1024, noEom: opts.noEom ?? false, packet: opts.packet ?? 512, leftover: opts.leftover ?? "",
+      raw: opts.raw ?? false, emptyAfterBlock: opts.emptyAfterBlock ?? false,
+    };
     this.maxPacket = this.opts.packet;
     if (this.opts.leftover) this.inQueue.push(msgIn(152, new TextEncoder().encode(this.opts.leftover), true));
   }
@@ -70,7 +88,11 @@ export class VirtualUsbtmc implements BulkPipe {
       const parts: Uint8Array[] = [];
       const lines: string[] = [];
       for (const r of this.scope.exec(text)) {
-        if (typeof r === "string") lines.push(r);
+        if (this.opts.raw) {
+          const b = typeof r === "string" ? new TextEncoder().encode(`${r}\n`) : r;
+          if (b.includes(0x23) || (b[0] === 0x42 && b[1] === 0x4d)) this.hasBlock = true;
+          parts.push(b);
+        } else if (typeof r === "string") lines.push(r);
         else {
           if (lines.length) parts.push(new TextEncoder().encode(`${lines.splice(0).join(";")}\n`));
           parts.push(makeBlock(r));
@@ -90,6 +112,8 @@ export class VirtualUsbtmc implements BulkPipe {
       const whole = msgIn(m.tag, payload, eom);
       // Split the message into transfers of at most maxTransfer bytes (only the first has the header).
       for (let i = 0; i < whole.length; i += this.opts.maxTransfer) this.inQueue.push(whole.slice(i, i + this.opts.maxTransfer));
+      if (eom && this.hasBlock && this.opts.emptyAfterBlock) this.inQueue.push(new Uint8Array(0));
+      if (this.output.length === 0) this.hasBlock = false;
       return;
     }
     throw new Error(`virtual USB-TMC: unexpected MsgID ${m.msgId}`);
@@ -114,6 +138,7 @@ export class VirtualUsbtmc implements BulkPipe {
     }
     if (length % this.maxPacket !== 0) throw new Error(`bulk-IN length ${length} is not whole packets of ${this.maxPacket}`);
     this.transfersIn++;
+    if (!next.length) this.empties++;
     if (next.length > length) {
       this.inQueue.unshift(next.slice(length));
       return next.slice(0, length);

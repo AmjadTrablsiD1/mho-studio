@@ -209,7 +209,7 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
         port: num(b.port, C.instrument.scpi_port),
         protocol: b.protocol === "vicp" ? "vicp" : b.protocol === "raw" ? "raw" : undefined,
         sim: b.sim === true,
-        simModel: b.simModel === "lecroy" ? "lecroy" : "rigol",
+        simModel: b.simModel === "lecroy" || b.simModel === "siglent" ? b.simModel : "rigol",
         usb: b.usb === true,
         usbId: b.usbId ? String(b.usbId) : null,
       }));
@@ -494,7 +494,7 @@ void replacePrevious().then(() => server.listen(Number(explicitPort ?? C.server.
   if (!flag("no-open")) openBrowser(url);
   // Reconnect to where we were last time, without blocking the window.
   const s = loadSettings();
-  if (flag("sim")) void scope.connect({ sim: true, simModel: flag("lecroy") ? "lecroy" : "rigol" }).catch(() => {});
+  if (flag("sim")) void scope.connect({ sim: true, simModel: flag("lecroy") ? "lecroy" : flag("siglent") ? "siglent" : "rigol" }).catch(() => {});
   else if (flag("no-autoconnect")) return;
   else if (s.lastKind === "sim") void scope.connect({ sim: true, simModel: s.simModel }).catch(() => {});
   else if (s.lastKind === "usb") void scope.connect({ usb: true, usbId: s.usbId }).catch(() => {});

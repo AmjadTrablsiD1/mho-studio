@@ -13,8 +13,8 @@ export function expand(p: string): string {
 }
 
 /** lastKind: how the last successful connection was made, so the next launch reconnects the same way. */
-/** protocol: raw SCPI lines (RIGOL) or VICP (LeCroy) for the TCP link; simModel: which simulated scope. */
-export type Settings = { host: string; port: number; protocol: "raw" | "vicp"; recent: string[]; lastKind: "tcp" | "usb" | "sim" | null; usbId: string | null; simModel: "rigol" | "lecroy" };
+/** protocol: raw SCPI lines (RIGOL, T3DSO) or VICP (LeCroy) for the TCP link; simModel: which simulated scope. */
+export type Settings = { host: string; port: number; protocol: "raw" | "vicp"; recent: string[]; lastKind: "tcp" | "usb" | "sim" | null; usbId: string | null; simModel: "rigol" | "lecroy" | "siglent" };
 const DEFAULTS: Settings = { host: "", port: C.instrument.scpi_port, protocol: "raw", recent: [], lastKind: null, usbId: null, simModel: "rigol" };
 
 export function loadSettings(): Settings {

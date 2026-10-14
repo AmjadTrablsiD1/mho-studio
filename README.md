@@ -12,11 +12,16 @@ port 1861: live traces, the common settings, measurements, spectrum, deep
 memory, screenshots, setups and a console that reaches every automation (VBS)
 property. The app tells which family it is talking to from `*IDN?`.
 
+And the **Teledyne T3DSO1000** series (T3DSO1204 in the lab; Siglent-made, the
+same as Siglent's SDS1000X-E) over **USB** or raw SCPI on port **5025**: live
+traces on its 14-division screen, the common settings, trigger, measurements,
+deep memory, edge capture, screenshots, setups and a console.
+
 All TypeScript (Node + React). Talks to the scope over **LAN** (raw SCPI on port
-5555 for RIGOL, VICP on port 1861 for LeCroy) or **USB** (USB-TMC on the
-MHO984's rear USB Device port) — no VISA, no NI drivers. Comes with a
-**simulated MHO984** and a **simulated LeCroy** so it works with no instrument
-connected.
+5555 for RIGOL, 5025 for a T3DSO, VICP on port 1861 for LeCroy) or **USB**
+(USB-TMC on the rear USB Device port of the MHO984 or the T3DSO) — no VISA, no
+NI drivers. Comes with a **simulated MHO984**, a **simulated LeCroy** and a
+**simulated T3DSO1204**, so it works with no instrument connected.
 
 ![Scope, midnight](docs/scope-midnight.png)
 
@@ -163,6 +168,40 @@ bench — generator into CH1 and through a 20 kHz low-pass into CH2, a 1 MHz clo
 on CH3, a UART on CH4 — speaking the same SCPI. See [sim/README.md](sim/README.md)
 for exactly what it models and what it does not.
 
+## Connecting a Teledyne T3DSO1000 (T3DSO1204)
+
+The T3DSO1000 is made by Siglent (USB vendor 0xF4EC) and speaks Siglent's
+SCPI, although it answers `*IDN?` with "Lecroy,T3DSO1204 ,…": the app picks the
+driver by model. Checked on a T3DSO1204 (firmware 8.3.6.1.37R8) on 2026-10-14:
+every reply format the driver reads was taken from that instrument.
+
+- **USB** (simplest): a data cable into the rear **USB Device** port, then
+  **USB → Connect**. Nothing to install on macOS; on Windows the interface
+  needs the WinUSB driver (Zadig) if NI-VISA claimed it.
+- **LAN**: **Utility → IO Set → LAN Config** on the scope shows its address.
+  In MHO Studio choose **LAN → Teledyne T3DSO · SCPI** (port 5025). On a cable
+  straight to the computer nothing hands out addresses: give the computer's
+  network adapter a fixed address in the scope's subnet, with no router — e.g.
+  scope `192.168.1.20` / `255.255.255.0`, computer `192.168.1.21` /
+  `255.255.255.0` (System Settings → Network → the adapter → Details → TCP/IP →
+  Manually).
+
+What it offers: channels (on/off, V/div, offset, coupling incl. 50 Ω, probe,
+20 MHz limit, invert, unit, deskew), timebase and trigger delay on the
+14-division screen, memory depth (7K…14M; channels pair up as CH1/CH2 and
+CH3/CH4), acquisition mode and averages, trigger type and source, level, slope,
+coupling, Auto / Normal / Single / Stop, force, auto setup; 23 measurements
+(PAVA) with statistics and cross-check; screenshots (its BMP kept as PNG);
+setups (its XML file); deep memory; edge capture; console with the Siglent
+command list. Not offered: Bode, decode, math panel, segmented capture.
+
+What the instrument does differently, and the app copes with: numbers without
+units after `CHDR OFF`; waveforms as "DAT2,#9…" + signed bytes + **two**
+newlines; screenshots as a raw BMP without a length header; an empty USB
+transfer after each block; `A?;B?` answers only `A`; the descriptor's time
+origin is not filled in, so volts and times come from V/div, offset, time/div,
+delay and sample rate.
+
 ## What it does
 
 - **Scope** — live traces of CH1–4 and math; drag the channel markers (offset),
@@ -223,9 +262,9 @@ Keys: <kbd>Space</kbd> run/stop, <kbd>S</kbd> single, <kbd>A</kbd> autoset,
 ## Tests
 
 ```bash
-cd server && npm test        # core, service over TCP, over virtual USB-TMC, over VICP to the simulated LeCroy, edge capture on both, discovery (122 tests)
+cd server && npm test        # core, service over TCP, over virtual USB-TMC, over VICP to the simulated LeCroy, over virtual USB-TMC and TCP to the simulated T3DSO1204, real T3DSO replies, edge capture on all three, discovery (139 tests)
 cd server && npm run typecheck   # server, simulators and core (uses the TypeScript installed in ui/)
-cd ui && npx playwright test # 18 UI flows × 2 themes (33 runs, 3 skipped by design), axe, fold probe at 1366×768 / 1440×900
+cd ui && npx playwright test # 19 UI flows × 2 themes (35 runs, 3 skipped by design), axe, fold probe at 1366×768 / 1440×900
 ```
 
 ## Limitations

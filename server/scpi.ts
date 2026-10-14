@@ -15,7 +15,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { C } from "../core/src/constants.ts";
-import { ReplyReader, type Reply } from "../core/src/scpi/block.ts";
+import { ReplyReader, type Framing, type Reply } from "../core/src/scpi/block.ts";
 import { connectTo, type Conn } from "./transport.ts";
 import { NO_REPLY } from "./usbtmc.ts";
 import { VicpStream } from "./vicp.ts";
@@ -70,6 +70,8 @@ export class ScpiClient {
     this.port = port;
     this.conn = conn;
     this.reader.clear();
+    // A new link may lead to another family: plain framing until the driver says otherwise.
+    this.reader.framing = { blockPrefix: false, blockTrailer: 1 };
     this.stale = false;
     conn.on(NO_REPLY, (msg: string) => this.noReply(msg));
     conn.on("reply", (r: Reply) => {
@@ -235,6 +237,27 @@ export class ScpiClient {
       this.lastRttMs = performance.now() - t0;
       const data = r.kind === "block" ? r.data : new TextEncoder().encode(r.text);
       this.onTraffic?.({ t: Date.now(), dir: "in", text: `#block ${data.length} bytes`, bytes: data.length });
+      return data;
+    });
+  }
+
+  /** How replies are framed on this link (a driver sets it once the family is known). */
+  setFraming(f: Partial<Framing>): void {
+    this.reader.framing = { ...this.reader.framing, ...f };
+  }
+
+  /** A query whose reply is a raw BMP image with no block header (a Siglent screenshot). */
+  queryBmp(cmd: string, timeoutMs: number = C.instrument.block_timeout_ms): Promise<Uint8Array> {
+    return this.exclusive(async () => {
+      if (this.stale) await this.resync();
+      this.reader.expectBmp = true;
+      // Over USB-TMC a reply must be asked for; without a "?" the stream would not.
+      (this.conn as { expectReply?: () => void } | null)?.expectReply?.();
+      const t0 = performance.now();
+      const r = await this.ask(cmd, timeoutMs);
+      this.lastRttMs = performance.now() - t0;
+      const data = r.kind === "block" ? r.data : new TextEncoder().encode(r.text);
+      this.onTraffic?.({ t: Date.now(), dir: "in", text: r.kind === "block" ? `BMP ${data.length} bytes` : r.text, bytes: data.length });
       return data;
     });
   }

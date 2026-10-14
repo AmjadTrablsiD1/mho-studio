@@ -274,7 +274,7 @@ test("connect screen: LAN, USB and simulator tabs; USB lists what is plugged in"
   await expect(page.getByTestId("connect-card")).toBeVisible();
   await page.getByTestId("tab-usb").click();
   // This machine has no USB instrument: the tab must say so rather than fail.
-  await expect(page.getByTestId("usb-tab")).toContainText(/No RIGOL or USB-TMC device is connected|USB support did not load/);
+  await expect(page.getByTestId("usb-tab")).toContainText(/No USB-TMC instrument is connected|USB support did not load/);
   await expect(page.getByTestId("usb-tab")).toContainText(/macOS|Windows|Linux/);
   await page.screenshot({ path: `${shots}connect-usb.png` });
   await page.getByTestId("usb-connect-first").click();
@@ -329,6 +329,58 @@ test("LeCroy: the simulated X-Stream over VICP — traces, family-only views, co
     await page.getByTestId("spectrum-scope").click();
     await expect(page.locator("main")).toContainText(/10\.0\d* MHz/);
     await page.getByTestId("nav-scope").click();
+  } finally {
+    await api(page, "connect", { sim: true, simModel: "rigol" });
+  }
+  await expect(page.getByTestId("link-pill")).toContainText("MHO984");
+});
+
+test("Teledyne T3DSO1204: picked on the LAN tab or the simulator, 14-division screen, its trigger panel, console, screenshot, edge capture", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  await open(page, theme);
+  await api(page, "disconnect");
+  await expect(page.getByTestId("connect-card")).toBeVisible();
+  // LAN: the T3DSO speaks raw SCPI on port 5025, and the help says how to address a direct cable.
+  await page.getByTestId("tab-lan").click();
+  await page.getByTestId("brand-siglent").click();
+  await expect(page.locator("#port")).toHaveValue("5025");
+  await expect(page.getByTestId("siglent-help")).toContainText("no router");
+  await page.getByTestId("tab-sim").click();
+  await page.getByTestId("use-sim-siglent").click();
+  try {
+    await expect(page.getByTestId("link-pill")).toContainText("T3DSO1204");
+    await expect.poll(() => tracePixels(page, "ch1")).toBeGreaterThan(400);
+    await expect.poll(() => tracePixels(page, "ch2")).toBeGreaterThan(200);
+    // No generator, decoder or Bode on it.
+    await expect(page.getByTestId("nav-bode")).toHaveCount(0);
+    await expect(page.getByTestId("nav-decode")).toHaveCount(0);
+    await page.getByTestId("sec-horizontal").click();
+    await expect(page.locator(".inspector")).toContainText("14 divisions wide");
+    await expect(page.locator(".inspector")).not.toContainText("Zoom (delayed timebase)");
+    await page.getByTestId("sec-trigger").click();
+    await expect(page.getByRole("combobox", { name: "Trigger type" })).toHaveValue("EDGE");
+    await expect(page.locator(".inspector")).toContainText("Source");
+    expect(await pageScrolls(page)).toEqual({ x: false, y: false });
+    await axe(page, `t3dso scope/${theme}`);
+    await page.screenshot({ path: `${shots}t3dso-${theme}.png` });
+    await page.getByTestId("nav-console").click();
+    const box = page.getByRole("textbox", { name: "SCPI command" });
+    await box.fill("TDIV?");
+    await box.press("Enter");
+    await expect(page.locator("main")).toContainText("2.00E-07");
+    await page.getByTestId("nav-instrument").click();
+    await expect(page.locator("main")).toContainText("Teledyne T3DSO / Siglent SDS1000X-E");
+    await expect(page.locator("main")).not.toContainText(":SYSTem:OPTion:STATus?");
+    // Edge capture on its clock (CH2): 14 divisions, trigger one from the left.
+    await page.getByTestId("nav-edges").click();
+    await page.getByTestId("burst-trigger").selectOption("2");
+    await page.getByTestId("burst-level").fill("1.65");
+    await page.getByTestId("burst-window").selectOption(String(10e-6));
+    await page.getByTestId("burst-ch-1").uncheck();
+    await page.getByTestId("burst-ch-2").check();
+    await page.getByTestId("burst-start").click();
+    await expect(page.getByTestId("burst-status")).toContainText("done", { timeout: 30_000 });
+    await expect(page.getByTestId("burst-result-2")).toContainText(/CH2 · (1[3-5]|2[5-9]|30) rising/);
   } finally {
     await api(page, "connect", { sim: true, simModel: "rigol" });
   }

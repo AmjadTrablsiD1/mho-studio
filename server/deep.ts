@@ -43,7 +43,7 @@ export class DeepStore {
         const plan = await drv.deepBegin();
         available = plan.total;
         total = Math.max(1, Math.min(limit, plan.total));
-        const chunk = scope.reg.family === "lecroy" ? C.lecroy.deep_chunk_points : C.instrument.raw_chunk_points;
+        const chunk = scope.reg.deepChunk;
         for (let ci = 0; ci < srcs.length; ci++) {
           const src = srcs[ci];
           const buf = new Uint16Array(total);

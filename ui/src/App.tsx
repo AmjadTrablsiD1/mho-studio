@@ -176,7 +176,7 @@ function Header({ onLink, onShot }: { onLink: () => void; onShot: () => void }) 
         <button className="runkey" disabled={!connected} onClick={() => void attempt(() => action("root.autoset"))} title="Autoset (A)">AUTO</button>
         <button className="runkey" disabled={!connected} onClick={() => void attempt(() => action("root.tforce"))} title="Force trigger (F)">FORCE</button>
       </div>
-      <span className={`pill trig-state ${stateClass}`} data-test="trig-status" title={link?.family === "lecroy" ? "Trigger status (TRMD? and INR?)" : "Trigger status (:TRIGger:STATus?)"}>
+      <span className={`pill trig-state ${stateClass}`} data-test="trig-status" title={link?.family === "lecroy" || link?.family === "siglent" ? "Trigger status (TRMD? and INR?)" : "Trigger status (:TRIGger:STATus?)"}>
         {connected ? (C.instrument.trigger_status as Record<string, string>)[status] ?? status : "—"}
       </span>
       <button className="icon-btn" aria-label="Screenshot of the instrument's display" title="Screenshot of the instrument's display" disabled={!connected} onClick={onShot}><Icon.camera /></button>

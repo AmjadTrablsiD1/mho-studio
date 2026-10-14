@@ -5,6 +5,14 @@
 // Waveforms, screenshots, setup files and bus tables all arrive as blocks and
 // may contain "\n" bytes, so a block must be framed by its length, never by
 // a newline. Chunks arrive split anywhere; this reader does not care where.
+//
+// Some instruments need more (switched on per link with `framing`):
+//  • blockPrefix: text before the block ("DAT2,#9…", "C2:WF DAT2,#9…",
+//    "PNSU #9…" from a Siglent-made scope) is dropped, the block kept;
+//  • blockTrailer: how many newlines may follow a block (2 after a Siglent
+//    waveform: "…data\n\n");
+//  • expectBmp (one reply): a raw BMP with no block header, framed by the
+//    length in its own header (a Siglent screenshot).
 
 export type Reply = { kind: "line"; text: string } | { kind: "block"; data: Uint8Array };
 
@@ -13,13 +21,21 @@ const NL = 0x0a;
 const CR = 0x0d;
 const decoder = new TextDecoder("latin1");
 
+export type Framing = { blockPrefix: boolean; blockTrailer: number };
+
+/** "DAT2," / "C2:WF DAT2," / "PNSU ": a short header ending in a comma or space. */
+const PREFIX = /^[A-Za-z0-9:*_]+(?: [A-Za-z0-9_]+)?[ ,]$/;
+
 export class ReplyReader {
+  framing: Framing = { blockPrefix: false, blockTrailer: 1 };
+  /** The next reply is a raw BMP (set by the query that asks for one). */
+  expectBmp = false;
   private chunks: Uint8Array[] = [];
   private length = 0;
   /** Set when the start of a block has been seen: how many bytes the whole reply needs. */
   private need = 0;
-  /** A block's trailing newline had not arrived when the block was handed out. */
-  private owesTerminator = false;
+  /** Newlines a block may still be followed by that had not arrived when it was handed out. */
+  private owes = 0;
   /** Replies a message-framed link (VICP) delivered whole; they come out first. */
   private ready: Reply[] = [];
 
@@ -82,8 +98,14 @@ export class ReplyReader {
   /** The next complete reply, or null if more bytes are needed. */
   next(): Reply | null {
     if (this.ready.length) return this.ready.shift()!;
-    if (this.owesTerminator && this.length) this.dropTerminator();
+    if (this.owes && this.length) this.dropTerminator(this.owes);
     if (!this.length) return null;
+    if (this.expectBmp) return this.bmp();
+    if (this.byte(0) !== HASH && this.framing.blockPrefix) {
+      const k = this.prefixLength();
+      if (k < 0) return null;
+      if (k > 0) this.take(k);
+    }
     if (this.byte(0) === HASH) {
       const d = this.byte(1);
       if (d < 0) return null;
@@ -102,7 +124,7 @@ export class ReplyReader {
         this.take(2 + n);
         const data = this.take(len);
         this.need = 0;
-        this.dropTerminator();
+        this.dropTerminator(this.framing.blockTrailer);
         return { kind: "block", data };
       }
       if (d === 0x30) {
@@ -124,13 +146,68 @@ export class ReplyReader {
     return { kind: "line", text: decoder.decode(raw.subarray(0, end)) };
   }
 
-  /** The "\n" (or "\r\n") that follows a block, if it has arrived. */
-  private dropTerminator(): void {
-    this.owesTerminator = false;
-    if (this.byte(0) === CR && this.byte(1) === NL) this.take(2);
-    else if (this.byte(0) === NL) this.take(1);
-    else if (this.byte(0) === CR && this.length === 1) this.owesTerminator = true;
-    else if (this.length === 0) this.owesTerminator = true;
+  /**
+   * Up to `max` "\n" (or "\r\n") after a block, as far as they have arrived;
+   * those still to come are owed and dropped when they do. Anything else ends
+   * the debt: it is the next reply.
+   */
+  private dropTerminator(max = 1): void {
+    this.owes = 0;
+    let left = max;
+    while (left > 0) {
+      if (this.byte(0) === CR && this.byte(1) === NL) this.take(2);
+      else if (this.byte(0) === NL) this.take(1);
+      else if ((this.byte(0) === CR && this.length === 1) || this.length === 0) {
+        this.owes = left;
+        return;
+      } else return;
+      left--;
+    }
+  }
+
+  /**
+   * Bytes of text before a block ("DAT2,"), 0 when the reply is not a prefixed
+   * block, -1 when too little has arrived to tell. Only a short header ending
+   * in "," or " " followed by "#1"…"#9" and that many digits counts.
+   */
+  private prefixLength(): number {
+    for (let i = 0; i < 48; i++) {
+      const c = this.byte(i);
+      if (c < 0) return -1;
+      if (c === NL) return 0;
+      if (c !== HASH) continue;
+      if (i === 0) return 0;
+      const d = this.byte(i + 1);
+      if (d < 0) return -1;
+      if (d < 0x31 || d > 0x39) return 0;
+      for (let k = 0; k < d - 0x30; k++) {
+        const x = this.byte(i + 2 + k);
+        if (x < 0) return -1;
+        if (x < 0x30 || x > 0x39) return 0;
+      }
+      let head = "";
+      for (let k = 0; k < i; k++) head += String.fromCharCode(this.byte(k));
+      return PREFIX.test(head) ? i : 0;
+    }
+    return 0;
+  }
+
+  /** A raw BMP: its length is in its own header (bytes 2–5). */
+  private bmp(): Reply | null {
+    if (this.length < 6) return null;
+    if (this.byte(0) !== 0x42 || this.byte(1) !== 0x4d) {
+      // Not an image (an error text, say): hand it out as a line.
+      this.expectBmp = false;
+      return this.line();
+    }
+    const len = (this.byte(2) | (this.byte(3) << 8) | (this.byte(4) << 16) | (this.byte(5) << 24)) >>> 0;
+    this.need = len;
+    if (this.length < len) return null;
+    const data = this.take(len);
+    this.need = 0;
+    this.expectBmp = false;
+    this.dropTerminator(this.framing.blockTrailer);
+    return { kind: "block", data };
   }
 
   clear(): void {
@@ -138,7 +215,8 @@ export class ReplyReader {
     this.chunks = [];
     this.length = 0;
     this.need = 0;
-    this.owesTerminator = false;
+    this.owes = 0;
+    this.expectBmp = false;
   }
 }
 

@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { C } from "../../../core/src/constants.ts";
 import manual from "../../../core/src/registry/manual.json";
-import { LECROY_CONSOLE } from "../../../core/src/registry/lecroy.ts";
+import { useReg } from "../registry.ts";
 import { attempt, post, useLive } from "../api.ts";
 
 type Entry = { t: number; kind: "out" | "in" | "err" | "note"; text: string };
@@ -26,8 +26,8 @@ function loadHistory(): string[] {
 export function ConsoleView() {
   const connected = useLive((s) => s.link?.state === "connected");
   const traffic = useLive((s) => s.traffic);
-  const lecroy = useLive((s) => s.link?.family === "lecroy");
-  const COMMANDS = lecroy ? LECROY_CONSOLE : RIGOL_COMMANDS;
+  const r = useReg();
+  const COMMANDS = r.console ?? RIGOL_COMMANDS;
   const [log, setLog] = useState<Entry[]>([{ t: Date.now(), kind: "note", text: "Type a command. A '?' makes it a query. Tab completes from the instrument's command list (the MHO900 guide on a RIGOL; on a LeCroy the common remote-control set, and VBS? 'return=app.…' reads any automation property); ↑/↓ walk the history." }]);
   const [cmd, setCmd] = useState("");
   const [hist, setHist] = useState<string[]>(loadHistory);
@@ -116,7 +116,7 @@ export function ConsoleView() {
               style={{ height: 32 }}
               aria-label="SCPI command"
               data-test="console-input"
-              placeholder={lecroy ? "C1:VDIV?   or   VBS? 'return=app.Acquisition.C1.VerScale'" : ":TIMebase:MAIN:SCALe?"}
+              placeholder={r.family === "lecroy" ? "C1:VDIV?   or   VBS? 'return=app.Acquisition.C1.VerScale'" : r.family === "siglent" ? "C1:VDIV?   or   C1:PAVA? FREQ" : ":TIMebase:MAIN:SCALe?"}
               value={cmd}
               disabled={!connected}
               onChange={(e) => (setCmd(e.target.value), setSel(0))}

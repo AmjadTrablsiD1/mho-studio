@@ -13,7 +13,6 @@ import { ItemSelect, RemoveButton, SourceSelect } from "./Measurements.tsx";
 import { sourceLabel } from "../theme.ts";
 import { useReg } from "../registry.ts";
 import type { Features } from "../../../core/src/registry/families.ts";
-import { LECROY_TRIGGER_SUB } from "../../../core/src/registry/lecroy.ts";
 
 const SECTIONS: { id: Section; label: string; needs?: keyof Features }[] = [
   { id: "vertical", label: "Vertical" },
@@ -127,7 +126,7 @@ function Vertical() {
 
 function Horizontal() {
   useRead("timebase");
-  const lecroy = useReg().family === "lecroy";
+  const r = useReg();
   const srate = useLive((s) => s.values["acquire.srate"]);
   const mdepth = useLive((s) => s.values["acquire.mdepth"]);
   const tb = useLive((s) => s.values["timebase.scale"]);
@@ -148,19 +147,27 @@ function Horizontal() {
         <Ctl id="timebase.hreference.mode" />
         <Ctl id="timebase.hreference.position" />
       </div>
-      <div className="section">
-        <div className="section-title">Zoom (delayed timebase)</div>
-        <Ctl id="timebase.delay.enable" />
-        <Ctl id="timebase.delay.scale" />
-        <Ctl id="timebase.delay.offset" />
-      </div>
+      {r.byId.has("timebase.delay.enable") && (
+        <div className="section">
+          <div className="section-title">Zoom (delayed timebase)</div>
+          <Ctl id="timebase.delay.enable" />
+          <Ctl id="timebase.delay.scale" />
+          <Ctl id="timebase.delay.offset" />
+        </div>
+      )}
       {mode.toUpperCase().startsWith("XY") && <GroupPanel group="timebase" sub="xy" title="XY mode" />}
       <div className="section">
         <div className="metric-row"><span>Sample rate</span><strong>{fmt(srate as number, "Sa/s", 3)}</strong></div>
         <div className="metric-row"><span>Memory depth</span><strong>{typeof mdepth === "number" ? fmt(mdepth, "pts", 3) : String(mdepth ?? "—")}</strong></div>
-        <div className="metric-row"><span>Record length</span><strong>{typeof srate === "number" && typeof tb === "number" ? fmt(srate * tb * C.instrument.divisions_x, "pts", 3) : "—"}</strong></div>
+        <div className="metric-row"><span>Record length</span><strong>{typeof srate === "number" && typeof tb === "number" ? fmt(srate * tb * r.divisionsX, "pts", 3) : "—"}</strong></div>
       </div>
-      <p className="body-text">{lecroy ? "Wheel over the screen steps the timebase. On a LeCroy the screen centre follows from Trigger delay." : "Wheel over the screen steps the timebase; drag the T marker at the top to move the trigger point."}</p>
+      <p className="body-text">
+        {r.family === "lecroy"
+          ? "Wheel over the screen steps the timebase. On a LeCroy the screen centre follows from Trigger delay."
+          : r.family === "siglent"
+            ? `Wheel over the screen steps the timebase; drag the T marker at the top (or set Trigger delay) to move the trigger point. The screen is ${r.divisionsX} divisions wide; its centre is minus the trigger delay.`
+            : "Wheel over the screen steps the timebase; drag the T marker at the top to move the trigger point."}
+      </p>
     </>
   );
 }
@@ -169,8 +176,9 @@ function Trigger() {
   useRead("trigger", undefined, null);
   const mode = useLive((s) => String(s.values["trigger.mode"] ?? "EDGE"));
   const status = useLive((s) => s.status);
-  const lecroy = useReg().family === "lecroy";
-  const sub = lecroy ? LECROY_TRIGGER_SUB[mode] : TRIGGER_SUB[mode];
+  const r = useReg();
+  const lecroy = r.family === "lecroy";
+  const sub = r.triggerSub ? r.triggerSub[mode] : TRIGGER_SUB[mode];
   return (
     <>
       <div className="title-row">
@@ -180,7 +188,7 @@ function Trigger() {
       <div className="section">
         <Ctl id="trigger.mode" />
         <Ctl id="trigger.sweep" />
-        {lecroy && (
+        {r.family !== "rigol" && (
           <>
             <Ctl id="trigger.edge.source" />
             <Ctl id="trigger.edge.level" />
@@ -215,7 +223,9 @@ function Trigger() {
       <p className="body-text">
         {lecroy
           ? "Drag the T marker on the right edge to set the level. Each trigger type shows its own fields, as LeCroy's automation manual lists them; Source, Level and Slope above apply to all of them."
-          : "Drag the T marker on the right edge to set the edge level. Other trigger types show only the fields that apply to them, as the guide lists them."}
+          : r.family === "siglent"
+            ? "Drag the T marker on the right edge to set the level. The app sets the trigger type and its source; the conditions of the types other than Edge (pulse width, interval, runt…) are set on the instrument or with TRSE from the console."
+            : "Drag the T marker on the right edge to set the edge level. Other trigger types show only the fields that apply to them, as the guide lists them."}
       </p>
     </>
   );
@@ -223,7 +233,7 @@ function Trigger() {
 
 function Acquire() {
   useRead("acquire");
-  const lecroy = useReg().family === "lecroy";
+  const family = useReg().family;
   return (
     <>
       <div className="title-row"><h2>Acquire</h2></div>
@@ -241,9 +251,11 @@ function Acquire() {
       </div>
       <GroupPanel group="display" title="Display" />
       <p className="body-text">
-        {lecroy
+        {family === "lecroy"
           ? "Memory sets the most points a record may hold; the scope picks the sample rate from it and the timebase, up to its maximum. Averaging and ERES are per channel (Vertical) or math functions on the instrument."
-          : "Memory depth and sample rate trade against each other and against the number of channels on: 4 GSa/s with one channel, 2 GSa/s with two, 1 GSa/s with three or four (datasheet)."}
+          : family === "siglent"
+            ? "Channels pair up (CH1/CH2, CH3/CH4): with both of a pair on, up to 500 MSa/s and 7 Mpts; with one, 1 GSa/s and 14 Mpts. The record covers all 14 divisions, so its sample rate is the memory depth over 14 × time/div, at most the maximum."
+            : "Memory depth and sample rate trade against each other and against the number of channels on: 4 GSa/s with one channel, 2 GSa/s with two, 1 GSa/s with three or four (datasheet)."}
       </p>
     </>
   );

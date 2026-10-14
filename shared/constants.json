@@ -3,7 +3,7 @@
   "app": {
     "id": "mho-studio",
     "name": "MHO Studio",
-    "version": "0.3.2",
+    "version": "0.4.0",
     "icon": "📈",
     "tagline": "Remote bench for RIGOL MHO900 and Teledyne LeCroy X-Stream scopes"
   },
@@ -134,6 +134,28 @@
     "peaks": 8,
     "harmonics": 10,
     "floor_dbv": -140
+  },
+  "siglent": {
+    "_comment": "Teledyne T3DSO1000 / Siglent SDS1000X-E oscilloscopes (the T3DSO1204 is Siglent-made: USB vendor 0xF4EC, firmware 8.3.6.x): Siglent's SCPI on raw TCP port 5025 or USB-TMC. Measured on a T3DSO1204 (fw 8.3.6.1.37R8) on 2026-10-14: header off by CHDR OFF, numbers without units, 14 horizontal divisions, 25 codes per vertical division, waveform data ending in two newlines, screenshots as a raw 800x480 RGB565 BMP, no compound queries.",
+    "scpi_port": 5025,
+    "vendor_match": "SIGLENT",
+    "model_match": "^(T3DSO\\d|SDS\\d)",
+    "divisions_x": 14,
+    "codes_per_div": 25,
+    "screen_points": 2000,
+    "deep_chunk_points": 1000000,
+    "run_mode_default": "AUTO",
+    "memory_options": ["7K", "70K", "700K", "7M", "14K", "140K", "1.4M", "14M"],
+    "sim": {
+      "_comment": "The simulated T3DSO1204: 4 channels, 1 GSa/s and 14 Mpts per channel pair with one channel of the pair on, 500 MSa/s and 7 Mpts with both. The bench follows the other simulators.",
+      "idn": "Lecroy,T3DSO1204 ,T0101CSIM0000,8.3.6.1.37R8",
+      "max_sample_rate": 1000000000,
+      "noise_vrms": 0.002,
+      "ch1_sine_hz": 1000000,
+      "ch1_vpp": 1,
+      "ch3_square_hz": 100000,
+      "ch3_vpp": 1
+    }
   },
   "burst": {
     "_comment": "Edge capture: one trigger, one long record, every edge measured (server/burst.ts, core/src/dsp/edges.ts).",

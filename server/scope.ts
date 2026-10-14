@@ -10,6 +10,7 @@ import { key, keysOf, parseKey, relevant, type Control } from "../core/src/regis
 import { familyOf, protocolForPort, type Family, type Protocol, type Registry } from "../core/src/registry/families.ts";
 import { encode, matchOption, parseBool, parseIdn, parseNumber, type Identity, type Value } from "../core/src/scpi/values.ts";
 import { lecroyIdn } from "../core/src/scpi/lecroy.ts";
+import { siglentIdn } from "../core/src/scpi/siglent.ts";
 import { codes, detectWordOrder, toVolts, type ByteOrder, type Preamble } from "../core/src/wave/decode.ts";
 import { delay, measureAll, Stats } from "../core/src/dsp/measure.ts";
 import { compactBins, harmonics, peaks, type Spectrum } from "../core/src/dsp/spectrum.ts";
@@ -22,9 +23,11 @@ import { loadSettings, loadUnsupported, saveSettings, saveUnsupported } from "./
 import { log } from "./log.ts";
 import { startSim } from "../sim/server.ts";
 import { startLecroySim } from "../sim/lecroy-server.ts";
+import { startSiglentSim } from "../sim/siglent-server.ts";
 import { HttpError } from "./errors.ts";
 import { RigolDriver } from "./drivers/rigol.ts";
 import { LecroyDriver } from "./drivers/lecroy.ts";
+import { SiglentDriver } from "./drivers/siglent.ts";
 import type { Driver } from "./drivers/types.ts";
 
 export { HttpError };
@@ -149,9 +152,9 @@ export class ScopeService {
     let port = Number(opts.port ?? C.instrument.scpi_port);
     let protocol: Protocol = opts.protocol === "vicp" || opts.protocol === "raw" ? opts.protocol : protocolForPort(port);
     if (kind === "sim") {
-      const model: SimModel = opts.simModel === "lecroy" ? "lecroy" : "rigol";
+      const model: SimModel = opts.simModel === "lecroy" || opts.simModel === "siglent" ? opts.simModel : "rigol";
       if (this.sim && this.simModel !== model) await this.stopSim();
-      if (!this.sim) this.sim = model === "lecroy" ? await startLecroySim(0) : await startSim(0);
+      if (!this.sim) this.sim = model === "lecroy" ? await startLecroySim(0) : model === "siglent" ? await startSiglentSim(0) : await startSim(0);
       this.simModel = model;
       host = "127.0.0.1";
       port = this.sim.port;
@@ -161,7 +164,7 @@ export class ScopeService {
       port = 0;
       protocol = "raw";
     } else {
-      if (!host) throw new HttpError(400, "enter the oscilloscope's IP address (Utility → I/O → LAN on a RIGOL; Windows network settings on a LeCroy)");
+      if (!host) throw new HttpError(400, "enter the oscilloscope's IP address (Utility → I/O → LAN on a RIGOL or a T3DSO; Windows network settings on a LeCroy)");
       if (!/^[\w.:-]+$/.test(host)) throw new HttpError(400, "host must be a hostname or an IP address");
       if (!(port > 0 && port < 65536)) throw new HttpError(400, "port must be 1–65535");
     }
@@ -220,8 +223,8 @@ export class ScopeService {
       throw e;
     });
     const family = familyOf(raw.trim().replace(/^\*?IDN\s+/i, ""));
-    const idn = family === "lecroy" ? lecroyIdn(raw) : parseIdn(raw);
-    this.drv = family === "lecroy" ? new LecroyDriver(this) : new RigolDriver(this);
+    const idn = family === "lecroy" ? lecroyIdn(raw) : family === "siglent" ? siglentIdn(raw) : parseIdn(raw);
+    this.drv = family === "lecroy" ? new LecroyDriver(this) : family === "siglent" ? new SiglentDriver(this) : new RigolDriver(this);
     this.slots = [];
     this.batchFailures = 0;
     this.stats.clear();
@@ -233,7 +236,9 @@ export class ScopeService {
     const warn =
       family === "lecroy"
         ? this.link.sim ? null : `LeCroy support follows the X-Stream remote control manual and has been tested on the simulator only; "${idn.model}" is the first real one it meets. Values it does not answer are learned and skipped.`
-        : /MHO9/i.test(idn.model) ? null : `This app is built for the MHO984; "${idn.model || idn.raw}" answered. Commands follow the MHO900 guide and may differ on it.`;
+        : family === "siglent"
+          ? this.link.sim || /T3DSO1/i.test(idn.model) ? null : `This driver was checked on a T3DSO1204; "${idn.model}" answered. Siglent's SDS1000X-E commands are the same; other Siglent series differ.`
+          : /MHO9/i.test(idn.model) ? null : `This app is built for the MHO984; "${idn.model || idn.raw}" answered. Commands follow the MHO900 guide and may differ on it.`;
     this.setLink({ state: "connected", family, idn, transport: this.link.kind === "usb" ? "usb-tmc" : this.link.protocol === "vicp" ? `vicp over ${transportStatus().active ?? "tcp"}` : transportStatus().active, modelWarning: warn, error: null });
     this.broadcast("unsupported", [...this.unsupported]);
     this.broadcast("measure", this.measureRows());
@@ -814,7 +819,11 @@ export class ScopeService {
     if (!c) throw new HttpError(400, "empty command");
     let reply: string | null = null;
     let block: { bytes: number; text: string | null; hex: string } | null = null;
-    if (c.includes("?")) {
+    if (this.drv.bmpCommand?.(c)) {
+      // A screenshot that comes as a raw BMP, without the "?" of a query.
+      const data = await this.scpi.queryBmp(c, C.instrument.block_timeout_ms);
+      block = { bytes: data.length, text: null, hex: Array.from(data.subarray(0, 64), (b) => b.toString(16).padStart(2, "0")).join(" ") };
+    } else if (c.includes("?")) {
       // Long only for commands that return data blocks; a mistyped query should come back quickly.
       const slow = this.drv.slowQuery(c);
       const r = await this.scpi.queryAny(c, slow ? C.instrument.block_timeout_ms : C.instrument.console_timeout_ms).catch((e) => {

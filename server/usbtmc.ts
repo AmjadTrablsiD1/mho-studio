@@ -64,6 +64,12 @@ export class UsbtmcStream extends Duplex {
     this.replyTimeoutMs = ms;
   }
 
+  /** The next message is answered although it has no "?" (a Siglent SCDP sends its screenshot back). */
+  private forceReply = false;
+  expectReply(): void {
+    this.forceReply = true;
+  }
+
   _read(): void {
     /* replies are pushed as they are read */
   }
@@ -77,6 +83,8 @@ export class UsbtmcStream extends Duplex {
   _write(chunk: Buffer, _enc: BufferEncoding, cb: (e?: Error | null) => void): void {
     const data = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.length);
     const timeout = this.replyTimeoutMs;
+    const wantsReply = this.forceReply || expectsReply(data);
+    this.forceReply = false;
     // Strictly one message at a time: the next command goes out only after this one's reply is in.
     void this.run(async () => {
       if (this.destroyed) return cb();
@@ -89,7 +97,7 @@ export class UsbtmcStream extends Duplex {
         this.destroy(e as Error);
         return;
       }
-      if (!expectsReply(data)) return;
+      if (!wantsReply) return;
       try {
         await this.readReply(timeout);
       } catch (e) {
@@ -116,7 +124,10 @@ export class UsbtmcStream extends Duplex {
       const tag = this.tag;
       await this.bulk.out(requestIn(tag, this.chunk), C.usb.write_timeout_ms);
       // +3: the payload is padded to a multiple of 4, and a read shorter than the transfer overflows
-      const first = await this.bulk.in(wholePackets(TMC.header + this.chunk + 3, this.bulk.maxPacket), timeoutMs);
+      let first = await this.bulk.in(wholePackets(TMC.header + this.chunk + 3, this.bulk.maxPacket), timeoutMs);
+      // A Siglent-made scope (T3DSO1204, 2026-10-14) follows a block reply with an empty transfer, which
+      // then arrives first for the next request: skip it and read again.
+      for (let z = 0; !first.length && z < 3; z++) first = await this.bulk.in(wholePackets(TMC.header + this.chunk + 3, this.bulk.maxPacket), timeoutMs);
       const h = parseInHeader(first);
       if (h.tag !== tag) throw new Error(`USB-TMC: reply tag ${h.tag}, expected ${tag} (a reply left over from before)`);
       const take = (b: Uint8Array) => {
@@ -196,8 +207,11 @@ export function pipeFor(dev: UsbDevCore, iface: number, epIn: number, epOut: num
       await safe(() => dev.clearHalt("out", epOut));
     },
     close: async () => {
-      await safe(() => dev.releaseInterface(iface));
-      await safe(() => dev.close());
+      // The library refuses (throws) while a transfer is still pending; a device left claimed blocks
+      // every later connection ("could not open interface for exclusive access", seen 2026-10-14).
+      // So try again for a moment instead of giving up after one refusal.
+      await retry(() => dev.releaseInterface(iface));
+      await retry(() => dev.close());
     },
   };
 }
@@ -328,6 +342,18 @@ async function safe(fn: () => Promise<unknown>): Promise<void> {
     await fn();
   } catch {
     /* reported by the caller's own flow */
+  }
+}
+
+/** Like safe(), but tries up to `times` times, `ms` apart, while the call throws. */
+async function retry(fn: () => Promise<unknown>, times = 10, ms = 300): Promise<void> {
+  for (let i = 0; i < times; i++) {
+    try {
+      await fn();
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, ms));
+    }
   }
 }
 

@@ -169,3 +169,34 @@ test("disconnecting while a read is pending does not crash (the USB library thro
     process.off("uncaughtException", onErr);
   }
 });
+
+test("a Teledyne T3DSO1204 over USB: its empty transfer after each block, two newlines and raw BMP are all handled", async () => {
+  const { SiglentSim } = await import("../../sim/siglent.ts");
+  const t3 = new VirtualUsbtmc(new SiglentSim(), { raw: true, emptyAfterBlock: true, maxTransfer: 16 * 1024 });
+  const s = new ScopeService(() => {});
+  s.usbOpener = async () => ({
+    conn: new UsbtmcStream(t3.pipe(), 100_000) as never,
+    info: { id: "T0101CSIM0000", vendorId: 0xf4ec, productId: 0x1006, manufacturer: "Lecroy", product: "T3DSO1204", serial: "T0101CSIM0000", rigol: false, usbtmc: true },
+  });
+  try {
+    const link = await s.connect({ usb: true });
+    assert.equal(link.family, "siglent");
+    assert.equal(link.idn?.model, "T3DSO1204");
+    await s.frame();
+    await s.frame();
+    assert.equal(s.latest.get("CHANnel1")!.volts.length, 1400);
+    const png = await s.screenshot();
+    assert.deepEqual([...png.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+    // After blocks, empty transfers and double newlines, the next answer is still the next question's.
+    assert.equal(await s.readKey("timebase.scale"), 2e-7);
+    assert.equal(await s.readKey("channel.scale@2"), 1);
+    const deep = new DeepStore();
+    const meta = await deep.capture(s, ["CHANnel2"], 200_000, true, () => {});
+    assert.ok(meta.points > 1000);
+    assert.ok(t3.empties >= 4, `${t3.empties} empty transfers skipped`);
+    assert.equal(t3.clears, 0, "no reply was lost (a lost one would clear the device)");
+    assert.equal(s.link.state, "connected");
+  } finally {
+    await s.disconnect();
+  }
+});

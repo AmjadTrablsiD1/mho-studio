@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { C } from "../../../core/src/constants.ts";
+import { useReg } from "../registry.ts";
 import { fmt } from "../../../core/src/format.ts";
 import { attempt, get, post, useLive } from "../api.ts";
 import { Plot, type Series } from "../charts/Plot.tsx";
@@ -15,7 +16,7 @@ type Measured = Record<string, number | null>;
 const DEPTHS = [100_000, 1_000_000, 5_000_000, 10_000_000, 25_000_000];
 
 export function DeepView() {
-  const lecroy = useLive((s) => s.link?.family === "lecroy");
+  const reg = useReg();
   const meta = useLive((s) => s.deep);
   const progress = useLive((s) => s.deepProgress);
   const busy = useLive((s) => s.busy);
@@ -121,7 +122,7 @@ export function DeepView() {
               !capturing && (
                 <div className="empty">
                   <h3>No capture yet</h3>
-                  <p>Stops the scope and reads every point of the acquisition memory (in chunks of {fmt(lecroy ? C.lecroy.deep_chunk_points : C.instrument.raw_chunk_points, "pts", 3)}{lecroy ? ", WFSU first point / number of points" : ", RAW mode"}), then lets you zoom, measure and export it here. A 25 Mpt channel is 50 MB over the LAN.</p>
+                  <p>Stops the scope and reads every point of the acquisition memory (in chunks of {fmt(reg.deepChunk, "pts", 3)}{reg.family === "rigol" ? ", RAW mode" : ", WFSU first point / number of points"}), then lets you zoom, measure and export it here. A 25 Mpt channel is 50 MB over the LAN.</p>
                 </div>
               )
             )}

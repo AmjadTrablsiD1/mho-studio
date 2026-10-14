@@ -63,11 +63,19 @@
 - The off-screen test used the CH4 UART, whose 20 µs window can be all low (then it does fit the screen): moved to the CH3 square — a flaky server test fixed.
 - Result columns whose content overflowed squeezed rows with clipped items to nothing (the result tab bar became 2 px and unclickable): rows are content-sized in the Edge capture, Deep memory, Spectrum and Bode columns.
 
+## Done (0.4.0, 2026-10-14)
+
+- **Teledyne T3DSO1000 (T3DSO1204) driver** (`server/drivers/siglent.ts`, `core/src/registry/siglent.ts`, `core/src/scpi/siglent.ts`): raw SCPI on 5025 or USB-TMC; channels, timebase and trigger delay, memory, acquisition, trigger type/source/level/slope/coupling, run/stop/single/force/autoset, 23 PAVA measurements, screenshots (BMP → PNG), setups (XML), deep memory, edge capture, console list. Every reply format was taken from a real T3DSO1204 (fw 8.3.6.1.37R8) over USB; its replies are kept as test fixtures (`core/test/fixtures/t3dso1204/`). Simulated T3DSO1204 (`sim/siglent.ts`, `--siglent`).
+- Why it failed on 2026-10-14: over **LAN** the computer's adapter had a self-assigned 169.254.x address, so 10.11.13.220 was routed to the office network (connect help now says how to address a direct cable); over **USB** the app took it for a LeCroy X-Stream ("Lecroy," in *IDN?) and sent X-Stream commands, read the empty transfer that follows each block as a broken reply and dropped the link, and kept the interface claimed afterwards. Fixed: family by model; empty transfers skipped; the release retried; double newlines after a block and text before it handled; a raw BMP read by its own length.
+- Screen grid, edge capture and record length use the family's division count (14 on a T3DSO); inspector, console, instrument, deep and spectrum views take family facts from the registry instead of "LeCroy or not".
+
 ## Doing
 
 - Nothing in progress.
 
 ## Next
+
+0000. **First full session on the T3DSO1204** (USB or LAN). Connect and check, in this order: traces overlay the scope's own screen (Screenshot) at a few V/div, offsets and timebases; **the sign of TRDL** — set Trigger delay to +2 div and see the trigger point move right of centre on both; **whether WFSU SP is honoured** on a long record (Horizontal 1 ms/div: the log says "WFSU SP… ignored" if not, and the screen is then thinned in the app — slower); a deep capture of 7 or 14 Mpts and its speed (lower `siglent.deep_chunk_points` if a chunk times out); PNSU setup save and **restore** (restore is untested on hardware); SCDP over LAN; an edge capture of the probe-compensation output against the scope's own RISE; trigger types other than Edge (TRSE syntax for GLIT/INTV/RUNT/DROP holdoff fields); whether `C1:BWL` or `BWL C1,ON` is the form it takes. Record what differs in `sim/README.md` and make `sim/siglent.ts` match.
 
 000. **First run on the Windows 11 PC: what failed on 2026-10-07 is not known yet** (asked). Likely causes: GitHub's default branch `main` is still the RIGOL-only 0.1; the installer needs Node 22.18+ and internet for npm; no .exe was available.
 00. **Windows:** the first CI run on windows-latest (2026-10-06, commit de1869d) passed the server tests, type check, all UI tests, the installer and the installed app on the simulated LeCroy; only the .exe step failed — `rcedit` was imported by a name it does not export (fixed; confirm on the next run). Then install on the Windows 11 PC itself.

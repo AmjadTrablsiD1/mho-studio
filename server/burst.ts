@@ -344,14 +344,15 @@ export class BurstRunner {
           } else if (cfg.segments === 1 && real && scope.values.get("acquire.mode") === seq) await write("acquire.mode", real);
         }
 
-        // 4. Timebase: the window after the trigger fits in the divisions right of the trigger point.
+        // 4. Timebase: the window after the trigger fits in the divisions right of the trigger point (10 on most screens, 14 on a T3DSO).
+        const divs = reg.divisionsX;
         const pre = C.burst.pre_trigger_div;
-        const after = 10 - pre;
+        const after = divs - pre;
         let tdiv = Number(await write("timebase.scale", up125(cfg.windowS / after)));
         if (tdiv * after < cfg.windowS * 0.999) tdiv = Number(await write("timebase.scale", step125(tdiv, 1)));
-        // Trigger point `pre` divisions from the left edge: screen centre 5 − pre divisions after it.
-        if (ctl("timebase.offset")?.set) await write("timebase.offset", (5 - pre) * tdiv);
-        else if (ctl("timebase.delay")?.set) await write("timebase.delay", -(5 - pre) * tdiv);
+        // Trigger point `pre` divisions from the left edge: screen centre divs/2 − pre divisions after it.
+        if (ctl("timebase.offset")?.set) await write("timebase.offset", (divs / 2 - pre) * tdiv);
+        else if (ctl("timebase.delay")?.set) await write("timebase.delay", -(divs / 2 - pre) * tdiv);
 
         // 5. As much memory as allowed, so the sample rate stays as high as the window permits.
         const md = ctl("acquire.mdepth");
@@ -361,7 +362,7 @@ export class BurstRunner {
         } else if (md?.set) await write("acquire.mdepth", cfg.maxPoints);
         const srate = (await scope.readKey("acquire.srate").catch(() => null)) as number | null;
         const dt = typeof srate === "number" && srate > 0 ? 1 / srate : null;
-        set({ setup: { timeDiv: tdiv, sampleRate: srate, points: srate ? Math.round(srate * tdiv * 10) : null, windowS: tdiv * after, dt, segments: cfg.segments } });
+        set({ setup: { timeDiv: tdiv, sampleRate: srate, points: srate ? Math.round(srate * tdiv * divs) : null, windowS: tdiv * after, dt, segments: cfg.segments } });
         if (dt) notes.push(`Sampling every ${fmtS(dt)}: edges faster than about ${fmtS(5 * dt)} cannot be measured well (they are marked under-sampled). A shorter window, or fewer channels switched on (instruments share their sample rate between channels), raises the sample rate.`);
 
         // 6. One Single, then wait for the instrument to stop on the event (in sequence mode: after the last segment).

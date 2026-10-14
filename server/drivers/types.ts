@@ -59,6 +59,8 @@ export interface Driver {
    * not say). Null when the record is not segmented.
    */
   segmentTimes?(src: string): Promise<{ count: number; times: SegmentTime[] } | null>;
+  /** Console commands without "?" that still answer, with a raw BMP (Siglent SCDP). */
+  bmpCommand?(cmd: string): boolean;
   /** Forget the transfer settings the driver last sent and skips re-sending (after console commands). */
   invalidate?(): void;
   /** Console queries that return big data blocks get the long timeout. */

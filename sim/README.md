@@ -162,3 +162,33 @@ is selected. Booleans come back as -1 / 0.
   the signal never reaches leaves the instrument armed (Auto still free-runs,
   FRTR always acquires). In Single a `TRMD?` poll lets the trigger arrive, as a
   live signal would; the instrument then reads STOP.
+
+## The simulated Teledyne T3DSO1204 (since 0.4.0)
+
+`sim/siglent.ts` + `sim/siglent-server.ts` (raw SCPI over TCP; `node
+sim/main.ts --siglent` runs it alone on 5025). Built from what a real T3DSO1204
+(fw 8.3.6.1.37R8) answered over USB on 2026-10-14; the real replies themselves
+are fixtures in `core/test/fixtures/t3dso1204/`.
+
+The bench: CH1 a 1 MHz sine, 1 Vpp; CH2 the 1 MHz 3.3 V clock with ringing;
+CH3 a 100 kHz square, 1 Vpp; CH4 the UART. 14 horizontal divisions, 25 codes
+per division, signed 8-bit. CH1/CH2 and CH3/CH4 are pairs: both of a pair on
+gives 500 MSa/s and 7K…7M memory, one gives 1 GSa/s and 14K…14M.
+
+Modelled, as the real one: `*IDN?` "Lecroy,T3DSO1204 ,…"; `CHDR` (headers and
+units on by default, off with CHDR OFF); `C<n>:TRA/VDIV/OFST/CPL/ATTN/BWL/INVS/
+UNIT/SKEW/TRLV/TRSL/TRCP`, `TDIV`, `TRDL`, `MSIZ` ("7M", "700K"), `SARA?`,
+`SANU?`, `ACQW`, `AVGA`, `TRMD` (Single stops after one acquisition), `TRSE
+<type>,SR,<src>,HT,OFF`, `WFSU SP,NP,FP`, `C<n>:WF? DAT2` ("DAT2,#9…" + bytes +
+two newlines) and `DESC`, `C<n>:PAVA?` ("****" when it cannot measure), `INR?`,
+`*ESR?` (32 command error, 16 execution error), `SAST?`, `SCDP` (an 800×480
+RGB565 BMP, raw), `PNSU?` / `PNSU #9…` (XML), `ARM`, `STOP`, `FRTR`, `ASET`,
+`*RST`, `*CLS`, `*OPC?`. A query it does not know: no reply, ESR bit 5.
+`new SiglentSim({ ignoreSparse: true })` ignores WFSU SP (every point comes),
+to test the driver's own thinning; the virtual USB-TMC device in the tests can
+add the empty transfer after each block (`emptyAfterBlock`).
+
+Not modelled: the conditions of trigger types other than Edge, math, FFT,
+decode, sequence/history, roll mode, the real instrument's timing, and how the
+real one answers several queries in one message (it answers only part; the
+simulator answers all).

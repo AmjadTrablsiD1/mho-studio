@@ -172,8 +172,8 @@ export function ScopeScreen() {
         const u = getUi();
         if (d.marker.which === "ca" || d.marker.which === "cb") setUi({ [d.marker.which]: m.t(d.pos) });
         else setUi({ [d.marker.which]: m.v(u.channel, d.pos) });
-      } else if (Date.now() - d.lastSent > C.ui.drag_write_ms && !(d.marker.kind === "tpos" && reg().family === "lecroy")) {
-        // (a LeCroy trigger position is sent once, on release: it is relative, and the screen catches up only with the next record)
+      } else if (Date.now() - d.lastSent > C.ui.drag_write_ms && !(d.marker.kind === "tpos" && reg().family !== "rigol")) {
+        // (a LeCroy or T3DSO trigger delay is sent once, on release: it is relative, and the screen catches up only with the next record)
         const w = valueFor(d.marker, d.pos);
         if (w) send(w.k, w.v);
         d.lastSent = Date.now();

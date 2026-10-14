@@ -18,7 +18,6 @@ type ScopeFft = { df: number; bins: number[]; peaks: Peak[]; harmonics: Harmonic
 
 export function SpectrumView() {
   const { screenPoints, family, features } = useReg();
-  const lecroy = family === "lecroy";
   const values = useLive((s) => s.values);
   const deep = useLive((s) => s.deep);
   const sources = useMemo(() => {
@@ -168,7 +167,7 @@ export function SpectrumView() {
                 <div className="metric-row"><span>Points</span><strong>{res ? res.points.toLocaleString() : "—"}</strong></div>
                 <div className="metric-row"><span>Bin spacing</span><strong>{fmt(res?.df, "Hz", 3)}</strong></div>
                 <div className="metric-row"><span>RBW (window ENBW)</span><strong>{fmt(res?.rbw, "Hz", 3)}</strong></div>
-                <p className="body-text">Zero-padded to a power of two. Levels are RMS per bin, corrected for the window's coherent gain; THD sums the power in each harmonic's main lobe up to H{C.spectrum.harmonics}. {res?.from === "scope" ? "Scope FFT: the instrument transforms its whole record at the full sample rate (math trace F8, the window chosen here); the app finds peaks and THD in the result. Levels are the instrument's magnitude scaling, which the manual does not state as peak or RMS — compare with a known sine before trusting absolute dBV. " : ""}A screen record has only {screenPoints} points — capture deep memory for resolution below {res ? fmt(res.df, "Hz", 2) : "a bin"}.{lecroy ? " On a LeCroy the screen record is every Nth point of the acquisition, without a filter: anything above half that reduced rate folds back (aliases) into this screen spectrum. Deep memory has every point." : ""}</p>
+                <p className="body-text">Zero-padded to a power of two. Levels are RMS per bin, corrected for the window's coherent gain; THD sums the power in each harmonic's main lobe up to H{C.spectrum.harmonics}. {res?.from === "scope" ? "Scope FFT: the instrument transforms its whole record at the full sample rate (math trace F8, the window chosen here); the app finds peaks and THD in the result. Levels are the instrument's magnitude scaling, which the manual does not state as peak or RMS — compare with a known sine before trusting absolute dBV. " : ""}A screen record has only {screenPoints} points — capture deep memory for resolution below {res ? fmt(res.df, "Hz", 2) : "a bin"}.{family !== "rigol" ? ` On a ${family === "lecroy" ? "LeCroy" : "T3DSO"} the screen record is every Nth point of the acquisition, without a filter: anything above half that reduced rate folds back (aliases) into this screen spectrum. Deep memory has every point.` : ""}</p>
               </div>
             </div>
           </div>

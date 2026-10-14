@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { C } from "../../../core/src/constants.ts";
+import { registryFor } from "../../../core/src/registry/families.ts";
 import { fmt } from "../../../core/src/format.ts";
 import { action, attempt, linkAddress, post, postBytes, readGroup, useLive } from "../api.ts";
 import { Ctl, GroupPanel } from "../components/Controls.tsx";
@@ -17,9 +18,11 @@ export function InstrumentView() {
   const file = useRef<HTMLInputElement>(null);
   const connected = link?.state === "connected";
   const lecroy = link?.family === "lecroy";
+  const siglent = link?.family === "siglent";
+  const rigol = !lecroy && !siglent;
   useEffect(() => {
-    if (connected && !lecroy) void readGroup("system").catch(() => {});
-  }, [connected, lecroy]);
+    if (connected && rigol) void readGroup("system").catch(() => {});
+  }, [connected, rigol]);
   return (
     <>
       <div className="toolbar">
@@ -34,10 +37,10 @@ export function InstrumentView() {
               <div className="hero">{link?.idn?.model ?? "—"}<small>{link?.sim ? "simulated" : link?.idn?.vendor}</small></div>
               <div className="metric-row"><span>Serial</span><strong>{link?.idn?.serial}</strong></div>
               <div className="metric-row"><span>Firmware</span><strong>{link?.idn?.firmware}</strong></div>
-              <div className="metric-row"><span>Driver</span><strong>{lecroy ? "Teledyne LeCroy X-Stream (VICP)" : "RIGOL MHO900"}</strong></div>
+              <div className="metric-row"><span>Driver</span><strong>{registryFor(link?.family).label}</strong></div>
               <Ctl id="system.version" label="SCPI version" />
               {link?.modelWarning && <p className="body-text" style={{ color: "var(--gold)" }}>{link.modelWarning}</p>}
-              {!lecroy && (
+              {rigol && (
                 <>
                   <div className="section-title" style={{ marginTop: 12 }}>Options (:SYSTem:OPTion:STATus?)</div>
                   <div className="opt-grid">
@@ -48,6 +51,7 @@ export function InstrumentView() {
                 </>
               )}
               {lecroy && <p className="body-text">Installed options are listed on the instrument (Utilities → Utilities Setup → Options). Anything the app has no panel for can be reached from the console with a VBS line.</p>}
+              {siglent && <p className="body-text">Installed options are listed on the instrument (Utility → System Status). It does not answer *OPT?. Anything the app has no panel for can be reached from the console with the Siglent command set.</p>}
             </div>
           </div>
           <div className="card">
@@ -63,6 +67,10 @@ export function InstrumentView() {
               {lecroy ? (
                 <p className="body-text">
                   Messages travel in VICP frames on port {C.lecroy.vicp_port}; each reply carries the number of the query it answers, so a late reply is recognised and dropped. Waveforms come as a WAVEDESC descriptor plus 16-bit little-endian words (CFMT DEF9,WORD,BIN; CORD LO); volts = VERTICAL_GAIN × code − VERTICAL_OFFSET. The live screen asks for every Nth point (about {C.lecroy.screen_points} per channel); Deep memory reads them all.
+                </p>
+              ) : siglent ? (
+                <p className="body-text">
+                  {link?.kind === "usb" ? "USB-TMC bulk transfers (USB488); the instrument follows each data block with an empty transfer, which is skipped. " : `Raw SCPI on port ${C.siglent.scpi_port}. `}Headers are off (CHDR OFF). Waveforms come as signed 8-bit codes after "DAT2," with two newlines at the end; volts = code × V/div / {C.siglent.codes_per_div} − offset, the first point {C.siglent.divisions_x / 2} divisions before the screen centre. The live screen asks for every Nth point (about {C.siglent.screen_points} per channel); Deep memory reads them all. Screenshots come as a BMP and are kept as PNG.
                 </p>
               ) : (
                 <>
@@ -82,7 +90,7 @@ export function InstrumentView() {
                 <button className="btn primary" disabled={!name.trim()} type="submit">Save current</button>
               </form>
               <div style={{ marginTop: 8 }}>
-                {presets.length === 0 && <p className="body-text">None saved. A preset is the instrument's own setup file (:SYSTem:SETup? on a RIGOL, PNSU? on a LeCroy), kept in {C.paths.presets_dir}.</p>}
+                {presets.length === 0 && <p className="body-text">None saved. A preset is the instrument's own setup file (:SYSTem:SETup? on a RIGOL, PNSU? on a LeCroy or a T3DSO), kept in {C.paths.presets_dir}.</p>}
                 {presets.map((p) => (
                   <div key={p.name} className="metric-row">
                     <span>{p.name} <span className="muted">· {new Date(p.savedAt).toLocaleString()} · {p.model}</span></span>
@@ -106,7 +114,7 @@ export function InstrumentView() {
               </div>
             </div>
           </div>
-          {!lecroy && (
+          {rigol && (
           <div className="card">
             <div className="card-head">System</div>
             <div className="card-body">
@@ -123,7 +131,7 @@ export function InstrumentView() {
             </div>
           </div>
           )}
-          {!lecroy && ([["autoset", "Autoset behaviour"], ["display", "Display"], ["lan", "LAN (read-only here)"]] as const).map(([g, t]) => (
+          {rigol && ([["autoset", "Autoset behaviour"], ["display", "Display"], ["lan", "LAN (read-only here)"]] as const).map(([g, t]) => (
             <div className="card" key={g}>
               <div className="card-body"><GroupPanel group={g} title={t} /></div>
             </div>
@@ -139,7 +147,17 @@ export function InstrumentView() {
               </div>
             </div>
           )}
-          {link?.sim && !lecroy && (
+          {link?.sim && siglent && (
+            <div className="card">
+              <div className="card-head">Simulated T3DSO1204</div>
+              <div className="card-body">
+                <p className="body-text" style={{ marginTop: 0 }}>
+                  Answers in the formats the real T3DSO1204 used (fw 8.3.6.1.37R8): *IDN? "Lecroy,T3DSO1204 ,…", numbers without units after CHDR OFF, "DAT2,#9…" + bytes + two newlines, PAVA with "****", raw BMP screenshots, PNSU as XML, *ESR? errors. {C.siglent.divisions_x} divisions; CH1/CH2 and CH3/CH4 share {fmt(C.siglent.sim.max_sample_rate, "Sa/s", 3)}. CH1: {fmt(C.siglent.sim.ch1_sine_hz, "Hz", 3)} sine, {C.siglent.sim.ch1_vpp} Vpp. CH2: {fmt(C.sim.clock_hz, "Hz", 3)} {C.sim.clock_v} V clock. CH3: {fmt(C.siglent.sim.ch3_square_hz, "Hz", 3)} square. CH4: UART.
+                </p>
+              </div>
+            </div>
+          )}
+          {link?.sim && rigol && (
             <div className="card">
               <div className="card-head">Simulated bench</div>
               <div className="card-body">
@@ -156,7 +174,7 @@ export function InstrumentView() {
               <p className="body-text" style={{ marginTop: 0 }}>Each asks first. Save a preset before a factory reset.</p>
               <div className="row wrap">
                 <button className="btn small danger" onClick={() => void attempt(() => action("common.rst"), "Factory setup restored")}>Factory reset (*RST)</button>
-                {!lecroy && <button className="btn small danger" onClick={() => void attempt(() => action("system.reset"))}>Restart instrument</button>}
+                {rigol && <button className="btn small danger" onClick={() => void attempt(() => action("system.reset"))}>Restart instrument</button>}
               </div>
             </div>
           </div>

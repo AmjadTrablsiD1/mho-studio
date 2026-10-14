@@ -6,6 +6,7 @@
 
 import { C } from "../../../core/src/constants.ts";
 import { key } from "../../../core/src/registry/controls.ts";
+import { reg } from "../registry.ts";
 import type { Value } from "../../../core/src/scpi/values.ts";
 import type { Frame } from "../api.ts";
 import { sourceColor, token } from "../theme.ts";
@@ -30,7 +31,8 @@ export type ScreenState = {
   drag: { marker: Marker; pos: number } | null;
 };
 
-const DIVX = C.instrument.divisions_x;
+/** Horizontal divisions of the instrument on the line (10, or 14 on a T3DSO). */
+const divx = () => reg().divisionsX;
 const DIVY = C.instrument.divisions_y;
 
 export function geometry(w: number, h: number, dpr: number): Geometry {
@@ -43,8 +45,8 @@ const num = (v: Value | undefined, d: number) => (typeof v === "number" && Numbe
 export function mapping(g: Geometry, values: Record<string, Value>) {
   const tb = num(values["timebase.scale"], 1e-3);
   const toff = num(values["timebase.offset"], 0);
-  const left = toff - (DIVX / 2) * tb;
-  const span = DIVX * tb;
+  const left = toff - (divx() / 2) * tb;
+  const span = divx() * tb;
   return {
     tb,
     toff,
@@ -80,8 +82,8 @@ function drawGrid(ctx: CanvasRenderingContext2D, g: Geometry): void {
   ctx.strokeStyle = grid;
   ctx.setLineDash([1, 3]);
   ctx.beginPath();
-  for (let i = 1; i < DIVX; i++) {
-    const x = Math.round(g.gx + (i * g.gw) / DIVX) + 0.5;
+  for (let i = 1; i < divx(); i++) {
+    const x = Math.round(g.gx + (i * g.gw) / divx()) + 0.5;
     ctx.moveTo(x, g.gy);
     ctx.lineTo(x, g.gy + g.gh);
   }
@@ -102,8 +104,8 @@ function drawGrid(ctx: CanvasRenderingContext2D, g: Geometry): void {
   ctx.lineTo(cx, g.gy + g.gh);
   ctx.moveTo(g.gx, cy);
   ctx.lineTo(g.gx + g.gw, cy);
-  for (let i = 0; i <= DIVX * 5; i++) {
-    const x = Math.round(g.gx + (i * g.gw) / (DIVX * 5)) + 0.5;
+  for (let i = 0; i <= divx() * 5; i++) {
+    const x = Math.round(g.gx + (i * g.gw) / (divx() * 5)) + 0.5;
     const l = i % 5 === 0 ? 5 : 3;
     ctx.moveTo(x, cy - l);
     ctx.lineTo(x, cy + l);

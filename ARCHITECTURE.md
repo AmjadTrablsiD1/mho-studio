@@ -125,9 +125,11 @@ console's completion.
 
 ## Families and drivers
 
-`*IDN?` decides (`core/src/registry/families.ts → familyOf`): a LeCroy vendor
-string selects the LeCroy driver, anything else the RIGOL one. A **driver**
-(`server/drivers/types.ts`) owns only what differs between brands:
+`*IDN?` decides (`core/src/registry/families.ts → familyOf`): a Siglent model
+(T3DSO…, SDS…) or vendor selects the Siglent driver — first, because the
+Teledyne T3DSO1204 answers "Lecroy,T3DSO1204 ,…" but speaks Siglent's SCPI —
+then a LeCroy vendor string the LeCroy driver, anything else the RIGOL one. A
+**driver** (`server/drivers/types.ts`) owns only what differs between brands:
 
 | | RIGOL (`drivers/rigol.ts`) | LeCroy (`drivers/lecroy.ts`) |
 |---|---|---|
@@ -141,6 +143,27 @@ string selects the LeCroy driver, anything else the RIGOL one. A **driver**
 | Deep memory | `:WAV:MODE RAW`, STARt/STOP | `WFSU NP,FP` chunks |
 | Measurements | `:MEASure:ITEM` slots | `C1:PAVA? <name>` on demand |
 | Screenshot / setup | `:DISPlay:DATA? PNG` / `:SYSTem:SETup?` | `HCSU` + `SCDP` (raw image) / `PNSU?` |
+
+The Siglent driver (`drivers/siglent.ts`, T3DSO1000 / SDS1000X-E): raw SCPI on
+port 5025 or USB-TMC; LeCroy-style headers with `q`/`w` templates (`{src}` the
+trigger source, `{type}` the trigger type, for `TRSE {type},SR,{v}`); `CHDR OFF`
+and numbers without units ("7M" is mega here); `*ESR?` bits for errors; `TRMD?`
++ `INR?` for status; screen records `WFSU SP,N` + `C<n>:WF? DAT2` (signed
+bytes, 25 per division), volts and times from V/div, offset, TDIV, TRDL and
+SARA (re-read after a setting changes or every `loops.preamble_max_age_ms`),
+14 divisions; deep memory `WFSU NP,FP` chunks; `PAVA?` with "****" for no
+value; `SCDP` a raw BMP turned into PNG; `PNSU?` an XML file. Per-family facts
+the shared code needs are in the registry: `divisionsX` (10 or 14; the screen
+grid, edge capture's timebase and trigger placement use it), `deepChunk`,
+`triggerSub`, `console`, `label`.
+
+The reply reader (`core/src/scpi/block.ts`) has opt-in **framing** for this
+family, set by the driver at connect: text before a block ("DAT2,", "C2:WF
+DAT2,", "PNSU ") is dropped; up to two newlines after a block are; and a query
+can expect a raw BMP framed by the length in its own header
+(`ScpiClient.queryBmp`; over USB-TMC it also tells the stream to ask for a reply
+although the command has no "?"). The USB-TMC stream skips the empty transfer
+this instrument sends after a block.
 
 Everything else is shared: the value mirror, read-back after writes, the live
 loop, learning unanswered queries per model and firmware, deep memory, the DSP,

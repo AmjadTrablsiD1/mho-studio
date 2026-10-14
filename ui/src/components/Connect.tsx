@@ -1,9 +1,10 @@
 // Getting to an instrument: over LAN (an address or a scan; raw SCPI for a
-// RIGOL, VICP for a Teledyne LeCroy), over USB (USB-TMC on the rear USB
-// Device port), or one of the simulators.
+// RIGOL or a Teledyne T3DSO, VICP for a Teledyne LeCroy X-Stream), over USB
+// (USB-TMC on the rear USB Device port), or one of the simulators.
 
 import { useEffect, useState } from "react";
 import { C } from "../../../core/src/constants.ts";
+import { registryFor } from "../../../core/src/registry/families.ts";
 import { attempt, linkAddress, post, useLive, type Link, type UsbInfo } from "../api.ts";
 import { Icon } from "./Icons.tsx";
 
@@ -34,7 +35,7 @@ export function ConnectPanel() {
         <div className="connect-card" data-test="connect-card">
           <div>
             <h3>Connect to an oscilloscope</h3>
-            <p className="body-text">A RIGOL MHO900 over the network or USB, a Teledyne LeCroy X-Stream scope (WaveRunner, WavePro, WaveMaster, SDA…) over the network, or try the app on a simulated one. The app recognises which it is from its answer to *IDN?.</p>
+            <p className="body-text">A RIGOL MHO900 or a Teledyne T3DSO1000 (Siglent SDS1000X-E) over the network or USB, a Teledyne LeCroy X-Stream scope (WaveRunner, WavePro, WaveMaster, SDA…) over the network, or try the app on a simulated one. The app recognises which it is from its answer to *IDN?.</p>
           </div>
           <div className="segmented" role="tablist" aria-label="Connection" style={{ justifySelf: "start" }}>
             {([["lan", "LAN"], ["usb", "USB"], ["sim", "Simulator"]] as [Tab, string][]).map(([t, l]) => (
@@ -62,6 +63,14 @@ export function ConnectPanel() {
                   {busy === "sim-lecroy" ? "Starting…" : "Use the simulated LeCroy"}
                 </button>
               </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                <p className="body-text" style={{ margin: 0 }}>
+                  <b>Teledyne T3DSO1204</b> (Siglent-made, 14 divisions, 1 GSa/s) answering in the formats the real one uses — a 1 MHz sine on CH1, a 1 MHz clock on CH2, a 100 kHz square on CH3, a UART on CH4.
+                </p>
+                <button className="btn" style={{ justifySelf: "start" }} data-test="use-sim-siglent" disabled={busy !== null} onClick={() => void connect({ sim: true, simModel: "siglent" }, "sim-siglent")}>
+                  {busy === "sim-siglent" ? "Starting…" : "Use the simulated T3DSO1204"}
+                </button>
+              </div>
               <p className="body-text" style={{ margin: 0, fontSize: 10.5 }}>For trying the app with no instrument; everything they show is labelled "Simulated".</p>
             </div>
           )}
@@ -72,13 +81,13 @@ export function ConnectPanel() {
   );
 }
 
-type Brand = "rigol" | "lecroy";
-const PORT: Record<Brand, number> = { rigol: C.instrument.scpi_port, lecroy: C.lecroy.vicp_port };
-const PROTOCOL: Record<Brand, "raw" | "vicp"> = { rigol: "raw", lecroy: "vicp" };
+type Brand = "rigol" | "siglent" | "lecroy";
+const PORT: Record<Brand, number> = { rigol: C.instrument.scpi_port, siglent: C.siglent.scpi_port, lecroy: C.lecroy.vicp_port };
+const PROTOCOL: Record<Brand, "raw" | "vicp"> = { rigol: "raw", siglent: "raw", lecroy: "vicp" };
 
 function LanTab({ busy, setBusy, connect }: { busy: string | null; setBusy: (b: string | null) => void; connect: (b: Record<string, unknown>, w: string) => Promise<void> }) {
   const settings = useLive((s) => s.settings);
-  const [brand, setBrand] = useState<Brand>(settings?.protocol === "vicp" ? "lecroy" : "rigol");
+  const [brand, setBrand] = useState<Brand>(settings?.protocol === "vicp" ? "lecroy" : settings?.port === C.siglent.scpi_port ? "siglent" : "rigol");
   const [host, setHost] = useState(settings?.host ?? "");
   const [port, setPort] = useState(String(settings?.port ?? PORT[brand]));
   const [found, setFound] = useState<{ found: Found[]; scanned: string[] } | null>(null);
@@ -91,11 +100,16 @@ function LanTab({ busy, setBusy, connect }: { busy: string | null; setBusy: (b: 
     <div style={{ display: "grid", gap: 12 }}>
       <div className="segmented" role="radiogroup" aria-label="Instrument family" style={{ justifySelf: "start" }}>
         <button role="radio" aria-checked={brand === "rigol"} className={brand === "rigol" ? "active" : ""} onClick={() => pick("rigol")} data-test="brand-rigol">RIGOL · raw SCPI</button>
-        <button role="radio" aria-checked={brand === "lecroy"} className={brand === "lecroy" ? "active" : ""} onClick={() => pick("lecroy")} data-test="brand-lecroy">LeCroy · VICP</button>
+        <button role="radio" aria-checked={brand === "siglent"} className={brand === "siglent" ? "active" : ""} onClick={() => pick("siglent")} data-test="brand-siglent">Teledyne T3DSO · SCPI</button>
+        <button role="radio" aria-checked={brand === "lecroy"} className={brand === "lecroy" ? "active" : ""} onClick={() => pick("lecroy")} data-test="brand-lecroy">LeCroy X-Stream · VICP</button>
       </div>
       {brand === "rigol" ? (
         <p className="body-text" style={{ margin: 0 }}>
           Raw SCPI on port {C.instrument.scpi_port}. On the scope, <b>Utility → I/O → LAN</b> shows its address. A router is not needed: a cable straight from the scope to this computer works too.
+        </p>
+      ) : brand === "siglent" ? (
+        <p className="body-text" style={{ margin: 0 }} data-test="siglent-help">
+          Raw SCPI on port {C.siglent.scpi_port} (T3DSO1000, Siglent SDS1000X-E). On the scope, <b>Utility → IO Set → LAN Config</b> shows its address. On a cable straight to this computer nothing hands out addresses: give this computer's network adapter a fixed address in the scope's subnet (e.g. scope 192.168.1.20, mask 255.255.255.0 → this computer 192.168.1.21, same mask, no router), or connect by USB instead.
         </p>
       ) : (
         <p className="body-text" style={{ margin: 0 }}>
@@ -138,7 +152,7 @@ function LanTab({ busy, setBusy, connect }: { busy: string | null; setBusy: (b: 
       </div>
       {found && (
         <div className="found">
-          {found.found.length === 0 && <span className="muted" style={{ fontSize: 11 }}>Nothing answered *IDN? on port {port}. Check the cable and that {brand === "lecroy" ? "Remote is set to TCPIP (VICP) on the scope" : "LAN is enabled on the scope"}; on a direct cable, give both ends addresses in the same subnet (e.g. 192.168.10.2 and .1).</span>}
+          {found.found.length === 0 && <span className="muted" style={{ fontSize: 11 }}>Nothing answered *IDN? on port {port}. Check the cable and that {brand === "lecroy" ? "Remote is set to TCPIP (VICP) on the scope" : "LAN is enabled on the scope"}; on a direct cable, give both ends addresses in the same subnet (e.g. 192.168.10.2 and .1). The search covers only the networks this computer is on: a scope on another subnet is not found until this computer has an address in it.</span>}
           {found.found.map((f) => (
             <button key={f.host} onClick={() => (setHost(f.host), void connect({ host: f.host, port: f.port, protocol: PROTOCOL[brand] }, "connect"))}>
               <span><b>{f.model || "?"}</b> <span className="mono">{f.host}</span></span>
@@ -165,19 +179,19 @@ function UsbTab({ busy, connect }: { busy: string | null; connect: (b: Record<st
   return (
     <div style={{ display: "grid", gap: 12 }} data-test="usb-tab">
       <p className="body-text" style={{ margin: 0 }}>
-        USB-TMC on the rear <b>USB Device</b> port (the square type-B socket) with a data cable. The front USB port is for memory sticks only.
+        USB-TMC on the rear <b>USB Device</b> port (the square type-B socket) with a data cable: a RIGOL MHO900 or a Teledyne T3DSO. The front USB port is for memory sticks only.
         A Windows-based LeCroy is reached over LAN (VICP): its USB sockets are for mice and memory sticks.
       </p>
       <div className="row wrap">
         <button className="btn" disabled={scanning || busy !== null} onClick={() => void scan()} data-test="usb-scan">{scanning ? "Looking…" : "Look for USB instruments"}</button>
         <button className="btn primary" disabled={busy !== null || !list?.available} onClick={() => void connect({ usb: true }, "usb")} data-test="usb-connect-first">
-          {busy === "usb" ? "Connecting…" : "Connect to the first RIGOL on USB"}
+          {busy === "usb" ? "Connecting…" : "Connect to the first instrument on USB"}
         </button>
       </div>
       {list && !list.available && <div className="code" style={{ color: "var(--gold)" }}>{list.error}</div>}
       {list?.available && (
         <div className="found">
-          {list.devices.length === 0 && <span className="muted" style={{ fontSize: 11 }}>No RIGOL or USB-TMC device is connected. Plug the scope's rear USB Device port into this computer and look again.</span>}
+          {list.devices.length === 0 && <span className="muted" style={{ fontSize: 11 }}>No USB-TMC instrument is connected. Plug the scope's rear USB Device port into this computer and look again.</span>}
           {list.devices.map((d) => (
             <button key={d.id} onClick={() => void connect({ usb: true, usbId: d.id }, "usb")} disabled={busy !== null}>
               <span><b>{d.product ?? "USB instrument"}</b> <span className="muted">{d.manufacturer ?? ""}</span></span>
@@ -207,7 +221,7 @@ export function ConnectionModal({ onClose }: { onClose: () => void }) {
           <div>
             <div className="metric-row"><span>State</span><strong>{link.state}</strong></div>
             <div className="metric-row"><span>Link</span><strong>{link.kind === "usb" ? "USB-TMC" : link.kind === "sim" ? `simulator (${link.protocol === "vicp" ? "VICP" : "raw SCPI"})` : link.protocol === "vicp" ? "LAN · VICP" : "LAN · raw SCPI"}</strong></div>
-            <div className="metric-row"><span>Driver</span><strong>{link.family === "lecroy" ? "Teledyne LeCroy X-Stream" : "RIGOL MHO900"}</strong></div>
+            <div className="metric-row"><span>Driver</span><strong>{registryFor(link.family).label}</strong></div>
             <div className="metric-row"><span>Address</span><strong>{linkAddress(link)}</strong></div>
             {link.idn && <div className="metric-row"><span>*IDN?</span><strong style={{ fontSize: 10 }}>{link.idn.raw}</strong></div>}
             <div className="metric-row"><span>Transport</span><strong>{link.transport ?? "—"}</strong></div>
