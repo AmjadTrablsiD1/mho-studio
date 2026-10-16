@@ -93,6 +93,8 @@ export type Settings = { host: string; port: number; protocol: "raw" | "vicp"; r
 export type Trace = { src: string; points: number; xinc: number; xorigin: number; volts: Float32Array };
 export type Frame = { t: number; seq: number; status: string; traces: Trace[] };
 
+export type AllMeasure = { srcs: string[]; values: { src: string; item: string; value: number | null }[]; at: number; points: number };
+
 export type Live = {
   loaded: boolean;
   streamUp: boolean;
@@ -102,6 +104,8 @@ export type Live = {
   status: string;
   busy: string | null;
   measure: MeasureRow[];
+  /** The instrument's all-measure table (RIGOL AMSource), when it is on. */
+  allMeasure: AllMeasure | null;
   readings: { counter: number | null; dvm: number | null };
   traffic: Traffic[];
   stats: LinkStats | null;
@@ -125,6 +129,7 @@ let state: Live = {
   status: "—",
   busy: null,
   measure: [],
+  allMeasure: null,
   readings: { counter: null, dvm: null },
   traffic: [],
   stats: null,
@@ -298,6 +303,7 @@ export async function connectStream(): Promise<void> {
   on<string>("status", (status) => set({ status }));
   on<string | null>("busy", (busy) => set({ busy }));
   on<MeasureRow[]>("measure", (measure) => set({ measure }));
+  on<AllMeasure | null>("allMeasure", (allMeasure) => set({ allMeasure }));
   on<{ counter: number | null; dvm: number | null }>("readings", (readings) => set({ readings }));
   on<LinkStats>("stats", (stats) => set({ stats }));
   on<BodeState>("bode", (bode) => set({ bode }));

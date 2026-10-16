@@ -18,8 +18,8 @@ import { makeWindow, type WindowName } from "../core/src/dsp/window.ts";
 import type { Slot } from "../core/src/registry/measurements.ts";
 import { ScpiClient, ScpiError, type Traffic } from "./scpi.ts";
 import { transportStatus, type Conn } from "./transport.ts";
-import { openUsb, type UsbInfo } from "./usbtmc.ts";
-import { loadSettings, loadUnsupported, saveSettings, saveUnsupported } from "./store.ts";
+import { openUsb, resetUsb, type UsbInfo } from "./usbtmc.ts";
+import { loadMeasurements, loadSettings, loadUnsupported, saveMeasurements, saveSettings, saveUnsupported } from "./store.ts";
 import { log } from "./log.ts";
 import { startSim } from "../sim/server.ts";
 import { startLecroySim } from "../sim/lecroy-server.ts";
@@ -74,6 +74,13 @@ export class ScopeService {
   viewers = 0;
   latest = new Map<string, Latest>();
   slots: Slot[] = [];
+  /**
+   * The "all measure" table for the channel(s) chosen with RIGOL :MEASure:AMSource: every
+   * single-source parameter, computed here from the screen record (computeAllMeasure).
+   */
+  allMeasure: { srcs: string[]; values: { src: string; item: string; value: number | null }[]; at: number; points: number } | null = null;
+  /** "MHO984 MHO9B281102040": whose measurement list `slots` is (saved per instrument). */
+  private instrumentKey = "";
   private stats = new Map<string, Stats>();
   private cross = new Map<string, number | null>();
   readings: { counter: number | null; dvm: number | null } = { counter: null, dvm: null };
@@ -122,6 +129,7 @@ export class ScopeService {
       status: this.status,
       busy: this.busy,
       measure: this.measureRows(),
+      allMeasure: this.allMeasure,
       readings: this.readings,
       settings: loadSettings(),
       traffic: this.traffic.slice(-120),
@@ -142,6 +150,12 @@ export class ScopeService {
 
   /** How the USB link is opened; tests put a virtual USB-TMC device here. */
   usbOpener: (id?: string | null) => Promise<{ conn: Conn; info: UsbInfo }> = openUsb;
+  /**
+   * How a silent USB instrument's port is reset. Null: the real reset, but only for a device the
+   * real opener opened — a test's virtual device must never lead to resetting real hardware
+   * (it once reset a scope on this computer's USB during a test run, 2026-10-16).
+   */
+  usbResetter: ((id?: string | null) => Promise<boolean>) | null = null;
 
   async connect(opts: { host?: string; port?: number; sim?: boolean; simModel?: SimModel; usb?: boolean; usbId?: string | null; protocol?: Protocol }): Promise<Link> {
     this.wantConnected = true;
@@ -173,7 +187,19 @@ export class ScopeService {
     this.setLink({ state: "connecting", kind, protocol, host, port, sim: kind === "sim", usb: null, error: null, idn: null, modelWarning: null, wordOrderLocked: false });
     try {
       await this.openLink(kind, host, port, opts.usbId ?? null);
-      await this.handshake();
+      try {
+        await this.handshake();
+      } catch (e) {
+        // A USB instrument that does not even answer *IDN? is wedged (the MHO984 after a burst of lost
+        // links, 2026-10-16): reset its port once and try again.
+        if (kind !== "usb" || !(e instanceof ScpiError) || !["ENOREPLY", "ETIMEDOUT", "ECONNRESET"].includes(e.code)) throw e;
+        log(`USB: no answer to *IDN? (${e.message}); resetting the port and trying once more`);
+        this.scpi.close("reopen");
+        const reset = this.usbResetter ?? (this.usbOpener === openUsb ? resetUsb : null);
+        if (!reset || !(await reset(opts.usbId ?? null))) throw e;
+        await this.openLink(kind, host, port, opts.usbId ?? null);
+        await this.handshake();
+      }
     } catch (e) {
       this.scpi.close("closed");
       this.setLink({ state: "idle", error: this.explain(e as Error, host, port) });
@@ -244,6 +270,7 @@ export class ScopeService {
     this.broadcast("measure", this.measureRows());
     log(`connected: ${idn.raw} over ${this.link.kind}/${this.link.protocol} as ${family}${this.unsupported.size ? `; ${this.unsupported.size} queries known unanswered on this firmware` : ""}`);
     await this.drainErrors();
+    await this.restoreMeasurements(`${idn.model} ${idn.serial}`.trim());
     this.broadcast("options", this.options);
     await this.readKeys(this.primaryKeys());
     await this.readKeys(this.triggerTypeKeys());
@@ -633,6 +660,7 @@ export class ScopeService {
     });
     this.frames++;
     this.broadcast("frame", { t: Date.now(), seq: this.frames, status: this.status, traces });
+    this.computeAllMeasure();
   }
 
   /** One screen record of one source, outside the live loop (Bode uses it). */
@@ -690,13 +718,49 @@ export class ScopeService {
     return { item, src1 };
   }
 
+  /**
+   * The list this app last had for this instrument comes back after a reconnect or a restart, and
+   * the instrument is set to show exactly it (on a RIGOL: delete all, add each). Before, the app's
+   * list was empty after a reconnect while the scope still showed its items, and adding one more
+   * in the app made the two disagree (2026-10-16). With nothing saved, the instrument is left as it is.
+   */
+  private async restoreMeasurements(instrument: string): Promise<void> {
+    this.instrumentKey = instrument;
+    const slots: Slot[] = [];
+    for (const m of loadMeasurements(instrument)) {
+      try {
+        if (slots.length < C.measure.max_items) slots.push({ id: `m${++this.slotSeq}`, ...this.checkSlot(m.item, m.src1, m.src2) });
+      } catch {
+        /* no longer offered on this instrument: dropped */
+      }
+    }
+    this.slots = slots;
+    for (const s of slots) this.stats.set(s.id, new Stats());
+    if (slots.length) {
+      await this.drv.measurementsChanged(slots).catch((e: Error) => log(`measurements not restored on the instrument: ${e.message}`));
+      await this.drainErrors();
+      log(`measurements restored: ${slots.map((s) => `${s.item} ${s.src1}${s.src2 ? `,${s.src2}` : ""}`).join("; ")}`);
+    }
+    this.broadcast("measure", this.measureRows());
+  }
+
+  private saveSlots(): void {
+    if (!this.instrumentKey) return;
+    saveMeasurements(this.instrumentKey, this.slots.map((s) => ({ item: s.item, src1: s.src1, ...(s.src2 ? { src2: s.src2 } : {}) })));
+  }
+
   async addMeasurement(item: string, src1: string, src2?: string): Promise<MeasureRow[]> {
     this.need();
     if (this.slots.length >= C.measure.max_items) throw new HttpError(400, `at most ${C.measure.max_items} measurements`);
     const slot: Slot = { id: `m${++this.slotSeq}`, ...this.checkSlot(item, src1, src2) };
-    await this.drv.addMeasurement(slot);
+    // The first one in the app's list: the instrument is set to show exactly the app's list, so items
+    // it still shows from before (the app's list was lost, or they were set on the front panel) do
+    // not linger beside it — the app showed 1, the MHO984 3 (2026-10-16).
+    if (!this.slots.length) await this.drv.measurementsChanged([slot]);
+    else await this.drv.addMeasurement(slot);
     await this.drainErrors();
     this.slots.push(slot);
+    this.saveSlots();
     this.stats.set(slot.id, new Stats());
     await this.readMeasurements();
     return this.measureRows();
@@ -713,6 +777,7 @@ export class ScopeService {
     const old = this.slots[i];
     const slot: Slot = { id, ...this.checkSlot(patch.item ?? old.item, patch.src1 ?? old.src1, patch.src2 ?? old.src2) };
     this.slots = this.slots.map((s) => (s.id === id ? slot : s));
+    this.saveSlots();
     this.stats.set(id, new Stats());
     this.cross.delete(id);
     await this.drv.measurementsChanged(this.slots);
@@ -723,6 +788,7 @@ export class ScopeService {
 
   async removeMeasurement(id: string): Promise<MeasureRow[]> {
     this.slots = this.slots.filter((s) => s.id !== id);
+    this.saveSlots();
     this.stats.delete(id);
     this.cross.delete(id);
     if (this.ready) {
@@ -746,6 +812,57 @@ export class ScopeService {
       const st = this.stats.get(slot.id)?.snapshot() ?? new Stats().snapshot();
       return { slot, value: st.last, stats: st, cross: this.cross.get(slot.id) ?? null };
     });
+  }
+
+  /** Which channels the instrument's all-measure is on ("CHANnel1", "CHANnel1,CHANnel3" or OFF). */
+  private allMeasureSources(): string[] {
+    if (!this.reg.byId.has("measure.amsource")) return [];
+    return String(this.values.get("measure.amsource") ?? "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter((x) => /^CHAN(nel)?[1-4]$/i.test(x))
+      .map((x) => `CHANnel${x.slice(-1)}`);
+  }
+
+  /**
+   * The all-measure table, computed here from the screen record the live view already reads: no
+   * extra queries. The guide has no query for the instrument's own table, and asking each item with
+   * :MEASure:ITEM? cost ~35 queries a refresh and put every one of them on the scope's own
+   * measurement list (2026-10-16). Values come from the same code as the cross-check.
+   */
+  private computeAllMeasure(): void {
+    const srcs = this.allMeasureSources();
+    if (!srcs.length) {
+      if (this.allMeasure) {
+        this.allMeasure = null;
+        this.broadcast("allMeasure", null);
+      }
+      return;
+    }
+    if (this.allMeasure && Date.now() - this.allMeasure.at < C.measure.all_period_ms && this.allMeasure.srcs.join() === srcs.join()) return;
+    const values: { src: string; item: string; value: number | null }[] = [];
+    let points = 0;
+    for (const src of srcs) {
+      const a = this.latest.get(src);
+      if (!a || Date.now() - a.t > 5000) continue;
+      points = a.volts.length;
+      const m = measureAll(a.volts, a.pre.xinc);
+      for (const def of this.reg.measurements) {
+        if (def.dual) continue;
+        const v = m[def.cross ?? def.item];
+        if (v !== undefined) values.push({ src, item: def.item, value: v !== null && Number.isFinite(v) ? v : null });
+      }
+    }
+    this.allMeasure = { srcs, values, at: Date.now(), points };
+    this.broadcast("allMeasure", this.allMeasure);
+  }
+
+  /** Make the instrument show exactly the app's measurement list (on a RIGOL: delete all, add each). */
+  async syncMeasurements(): Promise<MeasureRow[]> {
+    this.need();
+    await this.drv.measurementsChanged(this.slots);
+    await this.drainErrors();
+    return this.measureRows();
   }
 
   private async readMeasurements(): Promise<void> {

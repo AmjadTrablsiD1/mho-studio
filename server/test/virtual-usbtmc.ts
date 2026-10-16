@@ -31,6 +31,12 @@ export type VirtualOptions = {
   raw?: boolean;
   /** An empty bulk-IN transfer after each reply that carried a block (T3DSO1204). */
   emptyAfterBlock?: boolean;
+  /** Leave the reply to the first query matching this unanswered (the MHO984 did, to :WAVeform:DATA? on 2026-10-16). */
+  ignoreOnce?: RegExp | null;
+  /** After INITIATE_CLEAR, CHECK_CLEAR_STATUS answers "pending" for this long… */
+  clearPendingMs?: number;
+  /** …each answer taking this long (the MHO984 took ~6.9 s to finish a clear on 2026-10-16). */
+  clearStatusMs?: number;
 };
 
 /** Anything that executes a program message and returns its replies. */
@@ -55,6 +61,22 @@ export class VirtualUsbtmc<S extends Instrument = SimScope> implements BulkPipe 
   badTags = 0;
   /** Empty transfers handed out (emptyAfterBlock). */
   empties = 0;
+  /** Queries left unanswered (ignoreOnce). */
+  ignored = 0;
+  /** Answers nothing at all, clear or not, until its port is reset (the MHO984 after a burst of lost links, 2026-10-16). */
+  wedged = false;
+  resets = 0;
+  /** Which opening of the device a handle belongs to: closing an old handle does not close a newer one. */
+  private gen = 0;
+  resetPort(): void {
+    this.resets++;
+    this.wedged = false;
+    this.gen++;
+    this.closed = false;
+    void this.clear();
+  }
+  /** CHECK_CLEAR_STATUS says "pending" until then. */
+  private clearUntil = 0;
   /** The reply now being handed out carries a block. */
   private hasBlock = false;
 
@@ -62,7 +84,7 @@ export class VirtualUsbtmc<S extends Instrument = SimScope> implements BulkPipe 
     this.scope = scope;
     this.opts = {
       maxTransfer: opts.maxTransfer ?? 64 * 1024, noEom: opts.noEom ?? false, packet: opts.packet ?? 512, leftover: opts.leftover ?? "",
-      raw: opts.raw ?? false, emptyAfterBlock: opts.emptyAfterBlock ?? false,
+      raw: opts.raw ?? false, emptyAfterBlock: opts.emptyAfterBlock ?? false, ignoreOnce: opts.ignoreOnce ?? null, clearPendingMs: opts.clearPendingMs ?? 0, clearStatusMs: opts.clearStatusMs ?? 0,
     };
     this.maxPacket = this.opts.packet;
     if (this.opts.leftover) this.inQueue.push(msgIn(152, new TextEncoder().encode(this.opts.leftover), true));
@@ -85,6 +107,12 @@ export class VirtualUsbtmc<S extends Instrument = SimScope> implements BulkPipe 
       }
       this.incoming = [];
       const text = new TextDecoder("latin1").decode(msg).replace(/\r?\n$/, "");
+      if (this.wedged) return;
+      if (this.opts.ignoreOnce?.test(text)) {
+        this.opts.ignoreOnce = null;
+        this.ignored++;
+        return; // never answered: the next REQUEST waits in vain
+      }
       const parts: Uint8Array[] = [];
       const lines: string[] = [];
       for (const r of this.scope.exec(text)) {
@@ -165,6 +193,7 @@ export class VirtualUsbtmc<S extends Instrument = SimScope> implements BulkPipe 
    * (a synchronous throw from release/close while a transfer is pending) hit it.
    */
   asLibraryDevice(): UsbDevCore {
+    const gen = this.gen;
     const borrow = () => {
       if (this.busy) throw Object.assign(new Error("The same native value cannot be borrowed mutably while another borrow is active"), { code: "InvalidArg" });
     };
@@ -174,9 +203,13 @@ export class VirtualUsbtmc<S extends Instrument = SimScope> implements BulkPipe 
       nativeControlTransferIn: async (setup: { request: number }) => {
         if (setup.request === TMC.initiateClear) {
           await this.clear();
+          this.clearUntil = Date.now() + this.opts.clearPendingMs;
           return Uint8Array.of(TMC.statusSuccess);
         }
-        if (setup.request === TMC.checkClearStatus) return Uint8Array.of(TMC.statusSuccess, 0);
+        if (setup.request === TMC.checkClearStatus) {
+          if (this.opts.clearStatusMs) await new Promise((r) => setTimeout(r, this.opts.clearStatusMs));
+          return Uint8Array.of(Date.now() < this.clearUntil ? TMC.statusPending : TMC.statusSuccess, 0);
+        }
         return null;
       },
       clearHalt: async () => undefined,
@@ -186,7 +219,7 @@ export class VirtualUsbtmc<S extends Instrument = SimScope> implements BulkPipe 
       }) as UsbDevCore["releaseInterface"],
       close: (() => {
         borrow();
-        this.closed = true;
+        if (gen === this.gen) this.closed = true;
         return Promise.resolve();
       }) as UsbDevCore["close"],
     };

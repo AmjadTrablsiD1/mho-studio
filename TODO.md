@@ -69,6 +69,29 @@
 - Why it failed on 2026-10-14: over **LAN** the computer's adapter had a self-assigned 169.254.x address, so 10.11.13.220 was routed to the office network (connect help now says how to address a direct cable); over **USB** the app took it for a LeCroy X-Stream ("Lecroy," in *IDN?) and sent X-Stream commands, read the empty transfer that follows each block as a broken reply and dropped the link, and kept the interface claimed afterwards. Fixed: family by model; empty transfers skipped; the release retried; double newlines after a block and text before it handled; a raw BMP read by its own length.
 - Screen grid, edge capture and record length use the family's division count (14 on a T3DSO); inspector, console, instrument, deep and spectrum views take family facts from the registry instead of "LeCroy or not".
 
+## Done (0.4.6, 2026-10-16)
+
+- The Spectrum's Bandwidth card says why the MHO984 samples below 4 GSa/s: channels share the converters (4 / 2 / 1 / 1 GSa/s with 1 / 2 / 3 / 4 on), and the memory must hold the whole screen. The simulated MHO984 rounded every rate to 1-2-5, so it could never show 4 GSa/s (the real one reports 4.000000E+9): its maximum is now kept exact.
+
+## Done (0.4.5, 2026-10-16)
+
+- **Spectrum bandwidth, adjustable.** A span (start / stop typed with units, or dragged on the plot; Full resets). **Live bandwidth up to…** sets the time/div so the screen record reaches it (screen points ÷ (2 × divisions × time/div)). **Full rate** reads 64 k–4 M points of the record at the scope's own sample rate (bandwidth = sample rate ÷ 2) and the server returns the span shown at the record's full resolution (`deep.analyse` fmin/fmax; at most `spectrum.max_bins_sent` values, peaks inside the span). The Bandwidth card states the span, what the record reaches, its sample rate, RBW, the signal time analysed and the lowest frequency it resolves. Level range moved out of the crowded toolbar.
+
+## Done (0.4.3, 2026-10-16)
+
+- **0.4.4:** the all-measure table is computed by the app from the screen record instead: asking each item with `:MEASure:ITEM?` cost ~35 queries a refresh and put every item on the scope's own measurement list (he saw them appear). New "Show only these on the scope" (Measure panel) makes the scope's list exactly the app's — it clears what 0.4.3 added.
+- (superseded by 0.4.4) **The scope's "all measure" table in the app.** With an All-measure source chosen (on the scope or in Measure → All-measure), the app reads every single-source parameter of that channel with `:MEASure:ITEM?` (8 per message, every `measure.all_period_ms`) and lists them under the screen and in the Measure panel. `measure.amsource` is now read at connect and watched, so a choice made at the scope shows within a few seconds. The guide has no query for the whole table.
+
+## Done (0.4.2, 2026-10-16)
+
+- **A USB scope that stops answering even *IDN?** (the MHO984 after the link losses of 0.4.0) gets its USB port reset once while connecting, then the connection is tried again (`resetUsb`; it took a manual reset on 2026-10-16). Only for a device the app opened itself.
+- **Measurements survive a reconnect and a restart**: the list is saved per instrument (model + serial, `measurements.json` in the config folder) and the instrument is set to show exactly it again. The first measurement added to an empty list clears what the instrument still showed (the app showed 1, the scope 3).
+- **Tests never touch real USB** (`MHO_STUDIO_NO_USB` in every service test and the UI suite): a USB test could otherwise have reached — and reset — a scope plugged into the computer running them.
+
+## Done (0.4.1, 2026-10-16)
+
+- **MHO984 over USB dropped the link, then talked nonsense, when settings were changed quickly** (found with a recording of the app's traffic on the real scope). Cause, in order: after quick timebase changes while stopped, the scope left one `:WAVeform:DATA?` unanswered (its own behaviour); the USB clear that follows answered "pending" for ~7 s, longer than the client's backstop, so the link was given up; and the old link, finishing its clear after the reconnect, reported "no reply" into the new link's first query — every answer after it belonged to the question before (`:CHAN1:SCAL?` → "OMEG"). Fixed: the clear has a 2 s budget (`usb.clear_budget_ms`), a closed USB stream reports nothing, and the client ignores every event from a link that has been replaced; the T3DSO's empty-transfer retries share the reply's time limit. Tests copy the scope's behaviour (virtual USB device with an unanswered query and a slow clear; a replaced link's late report).
+
 ## Doing
 
 - Nothing in progress.

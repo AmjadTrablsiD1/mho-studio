@@ -11,11 +11,13 @@ import { ScopeScreen } from "../scope/ScopeScreen.tsx";
 import { sourceLabel, sourceVar } from "../theme.ts";
 import { Icon } from "../components/Icons.tsx";
 import { ItemSelect, RemoveButton, SourceSelect, addQuick } from "../components/Measurements.tsx";
+import { AllMeasureGrid } from "../components/AllMeasure.tsx";
 
 export function ScopeView() {
   const cursors = useUi((u) => u.cursors);
   const persistence = useUi((u) => u.persistence);
   const rows = useLive((s) => s.measure.length);
+  const hasAll = useLive((s) => s.allMeasure !== null);
   return (
     <>
       <div className="toolbar">
@@ -33,7 +35,7 @@ export function ScopeView() {
         <button className="btn small" onClick={() => void addQuick()} title="Add a measurement on the selected channel; change it in its row below" data-test="measure-quick-add">+ Measurement</button>
         <button className={`icon-btn${persistence ? " on" : ""}`} aria-pressed={persistence} aria-label="Persistence" title="Persistence (P)" onClick={() => setUi({ persistence: !persistence })}><Icon.persist /></button>
       </div>
-      <div className="pane" style={{ display: "grid", gridTemplateRows: rows ? "minmax(0,1fr) 196px" : "minmax(0,1fr)" }}>
+      <div className="pane" style={{ display: "grid", gridTemplateRows: rows || hasAll ? "minmax(0,1fr) 196px" : "minmax(0,1fr)" }}>
         <div style={{ position: "relative", minHeight: 0 }}>
           <div className="scope-stage">
             <Legend />
@@ -41,7 +43,12 @@ export function ScopeView() {
             <Foot />
           </div>
         </div>
-        {rows > 0 && <MeasureTable />}
+        {(rows > 0 || hasAll) && (
+          <div style={{ minHeight: 0, overflowY: "auto", display: "grid", gap: 8, alignContent: "start" }}>
+            {rows > 0 && <MeasureTable />}
+            {hasAll && <div className="bottom" style={{ padding: "8px 12px" }}><AllMeasureGrid /></div>}
+          </div>
+        )}
       </div>
     </>
   );

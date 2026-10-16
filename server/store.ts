@@ -114,3 +114,33 @@ export function saveUnsupported(firmware: string, ids: string[]): void {
   mkdirSync(dirname(f), { recursive: true });
   writeFileSync(f, JSON.stringify(all, null, 1));
 }
+
+/**
+ * The app's measurement list per instrument ("MHO984 MHO9B281102040"), so a
+ * reconnect — or a restart of the app — brings back the same list, and the
+ * instrument is made to show exactly that list again.
+ */
+export type SavedMeasurement = { item: string; src1: string; src2?: string };
+const measureFile = () => expand(`${C.paths.config_dir}/measurements.json`);
+
+export function loadMeasurements(instrument: string): SavedMeasurement[] {
+  try {
+    const all = JSON.parse(readFileSync(measureFile(), "utf8")) as Record<string, SavedMeasurement[]>;
+    return Array.isArray(all[instrument]) ? all[instrument] : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveMeasurements(instrument: string, list: SavedMeasurement[]): void {
+  let all: Record<string, SavedMeasurement[]> = {};
+  try {
+    all = JSON.parse(readFileSync(measureFile(), "utf8"));
+  } catch {
+    /* first one */
+  }
+  all[instrument] = list;
+  const f = measureFile();
+  mkdirSync(dirname(f), { recursive: true });
+  writeFileSync(f, JSON.stringify(all, null, 1));
+}

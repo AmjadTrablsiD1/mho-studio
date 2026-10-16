@@ -8,12 +8,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.MHO_STUDIO_HOME = mkdtempSync(join(tmpdir(), "mho-studio-usb-"));
+process.env.MHO_STUDIO_NO_USB = "1"; // never touch a real instrument on this computer's USB
 
 const { ScopeService } = await import("../scope.ts");
 const { DeepStore } = await import("../deep.ts");
 const { UsbtmcStream } = await import("../usbtmc.ts");
 const { VirtualUsbtmc } = await import("./virtual-usbtmc.ts");
 const { loadSettings } = await import("../store.ts");
+const { C } = await import("../../core/src/constants.ts");
 
 type Dev = InstanceType<typeof VirtualUsbtmc>;
 function service(dev: Dev, chunk: number) {
@@ -199,4 +201,77 @@ test("a Teledyne T3DSO1204 over USB: its empty transfer after each block, two ne
   } finally {
     await s.disconnect();
   }
+});
+
+test("MHO984, 2026-10-16: an unanswered :WAVeform:DATA? whose USB clear stays 'pending' costs one frame, not the link", async () => {
+  // The real scope left DATA? unanswered after quick timebase changes while stopped; clearing it took long
+  // enough that the client's backstop gave the whole link up.
+  const d = new VirtualUsbtmc(undefined, { ignoreOnce: /:WAVeform:DATA\?/, clearPendingMs: 30_000, clearStatusMs: 300 });
+  const s = service(d, 100_000);
+  try {
+    await s.connect({ usb: true });
+    const t0 = Date.now();
+    await assert.rejects(s.frame(), /no reply/);
+    assert.equal(d.ignored, 1);
+    assert.ok(Date.now() - t0 < (C.instrument.query_timeout_ms * 2 + C.usb.backstop_ms), `${Date.now() - t0} ms`);
+    assert.equal(s.link.state, "connected", "the link stays");
+    // And the conversation is still in step: each answer belongs to its question.
+    assert.equal(await s.readKey("channel.scale@1"), 0.5);
+    assert.equal(await s.readKey("timebase.scale"), 1e-4);
+    await s.frame();
+    assert.equal(s.latest.get("CHANnel1")!.volts.length, 1000);
+  } finally {
+    await s.disconnect();
+  }
+});
+
+test("a replaced link's late 'no reply' and stray bytes do not reach the new link (the off-by-one of 2026-10-16)", async () => {
+  const { ScpiClient } = await import("../scpi.ts");
+  const { NO_REPLY } = await import("../usbtmc.ts");
+  const { Duplex } = await import("node:stream");
+  const fake = () => new Duplex({ read() {}, write(_c, _e, cb) { cb(); } });
+  const q = new ScpiClient();
+  const old = fake();
+  q.attach(old as never, "USB", 0);
+  const now = fake();
+  q.attach(now as never, "USB", 0);
+  const p = q.query("A?", 2000);
+  await new Promise((r) => setImmediate(r)); // A? is now on the wire, waiting for its answer
+  // The old stream finishes its clear late and reports, then a stray reply of its own arrives.
+  old.emit(NO_REPLY, "late, from the old link");
+  old.emit("data", Buffer.from("stale\n"));
+  now.push(Buffer.from("a\n"));
+  assert.equal(await p, "a", "the new link's first answer is its own");
+  const p2 = q.query("B?", 2000);
+  now.push(Buffer.from("b\n"));
+  assert.equal(await p2, "b", "and the next is still in step");
+  q.close();
+});
+
+test("a USB instrument that does not even answer *IDN? gets its port reset once, then connects", async () => {
+  const d = new VirtualUsbtmc();
+  d.wedged = true;
+  const s = service(d, 100_000);
+  s.usbResetter = async () => (d.resetPort(), true);
+  try {
+    const link = await s.connect({ usb: true });
+    assert.equal(link.state, "connected");
+    assert.equal(link.idn?.model, "MHO984");
+    assert.equal(d.resets, 1);
+    assert.equal(await s.readKey("channel.scale@1"), 0.5);
+  } finally {
+    await s.disconnect();
+  }
+  // Still silent after the reset: the connect fails with a reason instead of trying for ever.
+  const dead = new VirtualUsbtmc();
+  dead.wedged = true;
+  const s2 = service(dead, 100_000);
+  s2.usbResetter = async () => {
+    dead.resetPort();
+    dead.wedged = true; // the reset did not help
+    return true;
+  };
+  await assert.rejects(s2.connect({ usb: true }), /reply|responding/);
+  assert.equal(dead.resets, 1);
+  await s2.disconnect();
 });

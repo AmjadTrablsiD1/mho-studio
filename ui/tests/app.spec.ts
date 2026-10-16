@@ -182,6 +182,57 @@ test("spectrum: the generator's 5 kHz tone is the top peak", async ({ page }, in
   await page.screenshot({ path: `${shots}spectrum-${theme}.png` });
 });
 
+test("spectrum bandwidth: a span typed or chosen, the live bandwidth raised, and a full-rate capture reaching half the sample rate", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  await open(page, theme, "spectrum");
+  await expect(page.getByTestId("spectrum-plot").locator("canvas")).toBeVisible();
+  // CH1 and CH2 are on: the card says the scope shares its 4 GSa/s, and how to get it back.
+  await expect(page.getByTestId("rate-limit")).toContainText(/2 channels on: .* at most 2 GSa\/s each\. Switch the others off for 4 GSa\/s/);
+  // Live: the screen record reaches 1000 / (2 × 10 × 100 µs) = 500 kHz.
+  await expect(page.getByTestId("spectrum-nyquist")).toContainText(/49\d(\.\d+)? kHz|500 kHz/);
+  // A span around the 5 kHz tone.
+  await page.getByTestId("span-start").fill("4k");
+  await page.getByTestId("span-stop").fill("6k");
+  await page.getByTestId("span-stop").press("Enter");
+  await expect(page.getByTestId("spectrum-shown")).toContainText(/4 kHz … 6 kHz/);
+  await page.getByTestId("span-full").click();
+  await expect(page.getByTestId("spectrum-shown")).toContainText(/^0 Hz … /);
+  // Raise the live bandwidth to 1 MHz: the timebase becomes 50 µs/div (1000 / (2 × 10 × 50 µs) = 1 MHz).
+  await page.getByTestId("spectrum-livebw").selectOption("1000000");
+  await expect(page.getByTestId("spectrum-nyquist")).toContainText(/(99\d(\.\d+)? kHz|1 MHz)/, { timeout: 10_000 });
+  // Full rate: the memory at the scope's own sample rate — far more bandwidth.
+  await page.getByTestId("spectrum-full").click();
+  await page.getByTestId("spectrum-points").selectOption(String(262_144));
+  await page.getByTestId("spectrum-capture").click();
+  await expect(page.getByTestId("spectrum-nyquist")).toContainText(/MHz|GHz/, { timeout: 30_000 });
+  // 262 144 points at the scope's rate: the time covered and what that cannot resolve are stated.
+  await expect(page.getByTestId("spectrum-covers")).toContainText(/µs|ms/);
+  await expect(page.getByTestId("spectrum-lowest")).toContainText("not resolved");
+  // A narrow span of the capture comes back at the record's full resolution: bins of sample rate / points.
+  await page.getByTestId("span-start").fill("0");
+  await page.getByTestId("span-stop").fill("1M");
+  await page.getByTestId("span-stop").press("Enter");
+  await expect(page.getByTestId("spectrum-shown")).toContainText(/0 Hz … 1 MHz/);
+  const binText = await page.locator(".metric-row").filter({ hasText: "Bin spacing" }).locator("strong").textContent();
+  const covers = await page.getByTestId("spectrum-covers").textContent();
+  const sec = (t: string) => { const m = /([\d.]+)\s*(µs|ms|s)/.exec(t)!; return Number(m[1]) * ({ "µs": 1e-6, ms: 1e-3, s: 1 } as Record<string, number>)[m[2]]; };
+  const hz = (t: string) => { const m = /([\d.]+)\s*(Hz|kHz|MHz)/.exec(t)!; return Number(m[1]) * ({ Hz: 1, kHz: 1e3, MHz: 1e6 } as Record<string, number>)[m[2]]; };
+  // Bin spacing × time covered = 1 (zero-padding aside): the span is not compressed.
+  await expect.poll(async () => hz((await page.locator(".metric-row").filter({ hasText: "Bin spacing" }).locator("strong").textContent()) ?? "") * sec(covers ?? "")).toBeLessThan(1.05);
+  expect(binText).toBeTruthy();
+  expect(await pageScrolls(page)).toEqual({ x: false, y: false });
+  await axe(page, `spectrum-bandwidth/${theme}`);
+  await page.screenshot({ path: `${shots}spectrum-full-${theme}.png` });
+  // Only CH1 on: the scope's full 4 GSa/s.
+  await page.getByTestId("spectrum-live").click();
+  await api(page, "control", { key: "channel.display@2", value: false });
+  // One channel, but AUTO memory (1 Mpts in the simulator) cannot hold 500 µs at 4 GSa/s: the card says so…
+  await expect(page.getByTestId("rate-limit")).toContainText("memory must hold the whole screen", { timeout: 10_000 });
+  // …and with more memory the full rate is back.
+  await api(page, "control", { key: "acquire.mdepth", value: "25M" });
+  await expect(page.getByTestId("rate-limit")).toContainText("At the scope's full 4 GSa/s", { timeout: 10_000 });
+});
+
 test("bode: a sweep of the simulated filter finds its 20 kHz corner", async ({ page }, info) => {
   const theme = info.project.metadata.theme as string;
   test.skip(theme !== "midnight", "one sweep is enough; the view is screenshotted in both themes below");
@@ -273,12 +324,14 @@ test("connect screen: LAN, USB and simulator tabs; USB lists what is plugged in"
   await api(page, "disconnect");
   await expect(page.getByTestId("connect-card")).toBeVisible();
   await page.getByTestId("tab-usb").click();
-  // This machine has no USB instrument: the tab must say so rather than fail.
+  // No USB instrument the suite may use: the tab must say so rather than fail.
   await expect(page.getByTestId("usb-tab")).toContainText(/No USB-TMC instrument is connected|USB support did not load/);
   await expect(page.getByTestId("usb-tab")).toContainText(/macOS|Windows|Linux/);
   await page.screenshot({ path: `${shots}connect-usb.png` });
-  await page.getByTestId("usb-connect-first").click();
-  await expect(page.locator(".toast.error")).toContainText(/No RIGOL or USB-TMC instrument is connected by USB/);
+  // The suite runs with real USB switched off (it must never touch a scope plugged into this computer):
+  // the tab says so, and connecting over USB is not offered.
+  await expect(page.getByTestId("usb-tab")).toContainText("USB support did not load");
+  await expect(page.getByTestId("usb-connect-first")).toBeDisabled();
   await page.getByTestId("tab-sim").click();
   await page.getByTestId("use-sim").click();
   await expect(page.getByTestId("link-pill")).toContainText("MHO984");
@@ -385,6 +438,23 @@ test("Teledyne T3DSO1204: picked on the LAN tab or the simulator, 14-division sc
     await api(page, "connect", { sim: true, simModel: "rigol" });
   }
   await expect(page.getByTestId("link-pill")).toContainText("MHO984");
+});
+
+test("all-measure set on the scope: every parameter of that channel is listed under the screen, computed here", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  await open(page, theme);
+  // As if chosen on the instrument: the app sees it with its next watch and starts reading the table.
+  await api(page, "control", { key: "measure.amsource", value: "CHANnel1" });
+  const grid = page.getByTestId("all-measure");
+  await expect(grid).toContainText("All measurements · CH1", { timeout: 10_000 });
+  await expect(page.getByTestId("all-measure-note")).toContainText("no extra commands to the scope");
+  await expect(page.getByTestId("all-VPP")).toContainText(/2(\.0+)? V|1\.9\d* V|2\.0\d* V/);
+  await expect(page.getByTestId("all-FREQuency")).toContainText(/5(\.0+)? kHz|4\.99\d* kHz|5\.00\d* kHz/);
+  expect(await pageScrolls(page)).toEqual({ x: false, y: false });
+  await axe(page, `all-measure/${theme}`);
+  await page.screenshot({ path: `${shots}all-measure-${theme}.png` });
+  await api(page, "control", { key: "measure.amsource", value: "OFF" });
+  await expect(grid).toHaveCount(0, { timeout: 10_000 });
 });
 
 test("edge capture: one trigger on the clock, every edge's rise time listed, CSV offered", async ({ page }, info) => {

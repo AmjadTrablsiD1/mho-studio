@@ -159,10 +159,11 @@ export class SimScope {
     const md = String(this.g("acquire.mdepth"));
     const want = md.toUpperCase() === "AUTO" ? Math.min(maxMem, 1e6) : Math.min(maxMem, numericOption(md) ?? 1e4);
     const fs = Math.min(maxRate, want / window);
-    // The rate steps like a real one: a 1-2-5 value no higher than the ideal.
+    // Below its maximum the rate steps like a real one: a 1-2-5 value no higher than the ideal. The
+    // maximum itself (4 GSa/s, which is not 1-2-5) is kept: the real MHO984 reports 4.000000E+9.
     const e = Math.floor(Math.log10(fs));
     const m = fs / 10 ** e;
-    const fsq = (m >= 5 ? 5 : m >= 2 ? 2 : m >= 1 ? 1 : 1) * 10 ** e;
+    const fsq = fs >= maxRate ? maxRate : (m >= 5 ? 5 : m >= 2 ? 2 : m >= 1 ? 1 : 1) * 10 ** e;
     return { fs: fsq, points: Math.max(1000, Math.round(fsq * window)) };
   }
 

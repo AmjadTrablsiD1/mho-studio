@@ -118,21 +118,34 @@ export class DeepStore {
     return out;
   }
 
-  /** Spectrum of up to 2^20 contiguous points from `from`. */
-  analyse(src: string, from: number, to: number, window: WindowName) {
+  /**
+   * Spectrum of up to 2^20 contiguous points from `from`, between `fmin` and `fmax` (default: 0 to
+   * half the sample rate). At most 4096 values are sent — the max of each group of bins, so peaks
+   * survive — so a narrow span comes back at the full resolution of the record and a wide one
+   * compressed. `f0` is the frequency of the first value; peaks are those inside the span.
+   */
+  analyse(src: string, from: number, to: number, window: WindowName, fmin = 0, fmax = Infinity) {
     const { pre } = this.channel(src);
     const count = Math.min(1 << 20, Math.max(16, Math.floor(to - from)));
     const v = this.volts(src, from, count);
     const s = spectrum(v, pre.xinc, window, false);
-    // Send at most 4096 points: the max of each group of bins, so peaks survive.
-    const stride = Math.max(1, Math.ceil(s.vrms.length / 4096));
+    const nb = s.vrms.length;
+    const i0 = Math.max(0, Math.min(nb - 2, Math.floor(Math.max(0, fmin) / s.df)));
+    const i1 = Math.max(i0 + 1, Math.min(nb - 1, Number.isFinite(fmax) ? Math.ceil(fmax / s.df) : nb - 1));
+    const stride = Math.max(1, Math.ceil((i1 - i0 + 1) / C.spectrum.max_bins_sent));
     const bins: number[] = [];
-    for (let i = 0; i < s.vrms.length; i += stride) {
+    for (let i = i0; i <= i1; i += stride) {
       let m = 0;
-      for (let j = i; j < Math.min(s.vrms.length, i + stride); j++) m = Math.max(m, s.vrms[j]);
+      for (let j = i; j < Math.min(i1 + 1, i + stride); j++) m = Math.max(m, s.vrms[j]);
       bins.push(m);
     }
-    return { src, points: count, df: s.df * stride, rbwHz: s.enbwHz, bins, peaks: peaks(s, C.spectrum.peaks), harmonics: harmonics(s, C.spectrum.harmonics), measured: measureAll(v, pre.xinc) };
+    const f0 = i0 * s.df;
+    const f1 = i1 * s.df;
+    const inSpan = peaks(s, C.spectrum.peaks * 8).filter((p) => p.hz >= f0 && p.hz <= f1).slice(0, C.spectrum.peaks);
+    return {
+      src, points: count, f0, df: s.df * stride, binDf: s.df, nyquistHz: (nb - 1) * s.df, sampleRate: 1 / pre.xinc, rbwHz: s.enbwHz,
+      bins, peaks: inSpan, harmonics: harmonics(s, C.spectrum.harmonics), measured: measureAll(v, pre.xinc),
+    };
   }
 
   /** CSV rows for [from, to), decimated by a whole stride if that is more than the row cap. */

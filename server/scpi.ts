@@ -73,14 +73,24 @@ export class ScpiClient {
     // A new link may lead to another family: plain framing until the driver says otherwise.
     this.reader.framing = { blockPrefix: false, blockTrailer: 1 };
     this.stale = false;
-    conn.on(NO_REPLY, (msg: string) => this.noReply(msg));
+    // Events from a link that has since been replaced are ignored: an old USB stream finishing its clear
+    // after a reconnect once reported "no reply" into the new link's first query, and every answer
+    // after it belonged to the question before (MHO984, 2026-10-16).
+    const mine = () => this.conn === conn;
+    conn.on(NO_REPLY, (msg: string) => {
+      if (mine()) this.noReply(msg);
+    });
     conn.on("reply", (r: Reply) => {
+      if (!mine()) return;
       this.bytesIn += r.kind === "line" ? r.text.length : r.data.length;
       this.reader.pushReply(r);
       this.deliver();
     });
-    conn.on("progress", (have: number, need: number) => this.onProgress?.(have, need));
+    conn.on("progress", (have: number, need: number) => {
+      if (mine()) this.onProgress?.(have, need);
+    });
     conn.on("data", (d: Buffer) => {
+      if (!mine()) return;
       this.bytesIn += d.length;
       this.reader.push(new Uint8Array(d.buffer, d.byteOffset, d.length));
       const p = this.reader.progress();

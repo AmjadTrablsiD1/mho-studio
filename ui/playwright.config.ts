@@ -28,7 +28,8 @@ export default defineConfig({
   webServer: {
     command: `node ../server/main.ts --port ${PORT} --no-open --no-reuse --sim`,
     url: `http://127.0.0.1:${PORT}/api/whoami`,
-    env: { MHO_STUDIO_HOME: home },
+    // MHO_STUDIO_NO_USB: the suite must never list, open or reset a real scope on this computer's USB.
+    env: { MHO_STUDIO_HOME: home, MHO_STUDIO_NO_USB: "1" },
     reuseExistingServer: false,
     timeout: 30_000,
   },

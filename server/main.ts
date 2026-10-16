@@ -273,6 +273,7 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
   },
   { method: "POST", path: /^\/api\/measure\/remove$/, mutate: true, handler: async (req, res) => json(res, 200, await scope.removeMeasurement(String((await body(req)).id))) },
   { method: "POST", path: /^\/api\/measure\/reset$/, mutate: true, handler: async (_q, res) => json(res, 200, scope.resetStats()) },
+  { method: "POST", path: /^\/api\/measure\/sync$/, mutate: true, handler: async (_q, res) => json(res, 200, await scope.syncMeasurements()) },
   // --------------------------------------------------------- one-shots
   {
     method: "GET", path: /^\/api\/screenshot\.png$/, mutate: false,
@@ -374,7 +375,7 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
       const s = url.searchParams;
       const w = (s.get("window") ?? C.spectrum.default_window) as WindowName;
       if (!C.spectrum.windows.includes(w)) throw new HttpError(400, "unknown window");
-      json(res, 200, deep.analyse(String(s.get("src")), num(s.get("from"), 0), num(s.get("to"), deep.meta?.points ?? 0), w));
+      json(res, 200, deep.analyse(String(s.get("src")), num(s.get("from"), 0), num(s.get("to"), deep.meta?.points ?? 0), w, num(s.get("fmin"), 0), num(s.get("fmax"), Infinity)));
     },
   },
   {

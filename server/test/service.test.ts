@@ -7,6 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.MHO_STUDIO_HOME = mkdtempSync(join(tmpdir(), "mho-studio-test-"));
+process.env.MHO_STUDIO_NO_USB = "1"; // never touch a real instrument on this computer's USB
 
 const { ScopeService } = await import("../scope.ts");
 const { DeepStore } = await import("../deep.ts");
@@ -185,4 +186,101 @@ test("Bode sweep of the simulated low-pass finds fc = 20 kHz and puts every sett
   assert.equal(scope.values.get("timebase.scale"), before.tb);
   assert.equal(scope.values.get("source.frequency@1"), before.f);
   assert.equal(scope.values.get("channel.scale@2"), before.s2);
+});
+
+test("measurements survive a reconnect: the app lists them again and the instrument shows exactly them", async () => {
+  type Sim = { log: string[] };
+  const sim = () => (scope as unknown as { sim: { scope: Sim } }).sim.scope;
+  for (const r of scope.measureRows()) await scope.removeMeasurement(r.slot.id);
+  await scope.addMeasurement("FREQuency", "CHANnel1");
+  await scope.addMeasurement("VPP", "CHANnel2");
+  await scope.connect({ sim: true });
+  let rows = scope.measureRows();
+  assert.deepEqual(rows.map((r) => `${r.slot.item} ${r.slot.src1}`), ["FREQuency CHANnel1", "VPP CHANnel2"]);
+  // The instrument was told: delete all, then these two — no third one from adding again.
+  const log = sim().log;
+  const del = log.lastIndexOf(":MEASure:DELete");
+  assert.ok(del >= 0, "measurements cleared on the instrument");
+  assert.deepEqual(log.slice(del + 1).filter((l) => /^:MEASure:ITEM /i.test(l)), [":MEASure:ITEM FREQuency,CHANnel1", ":MEASure:ITEM VPP,CHANnel2"]);
+  // Changed in the app: saved again, and still there after the next reconnect.
+  await scope.removeMeasurement(rows[1].slot.id);
+  await scope.connect({ sim: true });
+  rows = scope.measureRows();
+  assert.deepEqual(rows.map((r) => r.slot.item), ["FREQuency"]);
+  for (const r of rows) await scope.removeMeasurement(r.slot.id);
+});
+
+test("the first measurement added in the app clears what the instrument still showed from before", async () => {
+  type Sim = { log: string[]; exec: (m: string) => unknown };
+  const sim = () => (scope as unknown as { sim: { scope: Sim } }).sim.scope;
+  for (const r of scope.measureRows()) await scope.removeMeasurement(r.slot.id);
+  // Two items set on the instrument (front panel, or an earlier session the app no longer knows of).
+  sim().exec(":MEASure:ITEM VMAX,CHANnel1");
+  sim().exec(":MEASure:ITEM VMIN,CHANnel2");
+  sim().log.length = 0;
+  await scope.addMeasurement("FREQuency", "CHANnel1");
+  const log = sim().log;
+  assert.ok(log.includes(":MEASure:DELete"), log.join(" | "));
+  assert.deepEqual(log.slice(log.indexOf(":MEASure:DELete") + 1).filter((l) => /^:MEASure:ITEM /i.test(l)), [":MEASure:ITEM FREQuency,CHANnel1"]);
+  // The second is simply added.
+  sim().log.length = 0;
+  await scope.addMeasurement("VPP", "CHANnel2");
+  assert.ok(!sim().log.includes(":MEASure:DELete"));
+  for (const r of scope.measureRows()) await scope.removeMeasurement(r.slot.id);
+});
+
+test("all-measure (AMSource): every single-source parameter of the channel, computed from the screen record — no queries, nothing added on the scope", async () => {
+  type Sim = { log: string[]; exec: (m: string) => unknown };
+  const sim = () => (scope as unknown as { sim: { scope: Sim } }).sim.scope;
+  await scope.write("measure.amsource", "CHANnel1");
+  sim().log.length = 0;
+  await scope.frame();
+  const a = scope.allMeasure!;
+  assert.deepEqual(a.srcs, ["CHANnel1"]);
+  assert.equal(a.points, 1000);
+  const v = (item: string) => a.values.find((x) => x.item === item)!.value!;
+  assert.ok(Math.abs(v("VPP") - 2) < 0.1, `VPP ${v("VPP")}`);
+  assert.ok(Math.abs(v("PERiod") - 2e-4) < 4e-6, `PERiod ${v("PERiod")}`);
+  assert.ok(a.values.length >= 20, `${a.values.length} parameters`);
+  // The frame read the traces and nothing else: no :MEASure:ITEM? (each one would appear on the scope's own list).
+  assert.ok(!sim().log.some((l) => /MEAS/i.test(l)), sim().log.join(" | "));
+  await scope.write("measure.amsource", "OFF");
+  await scope.frame();
+  assert.equal(scope.allMeasure, null);
+});
+
+test("'show only this list on the scope': the instrument's measurements become exactly the app's", async () => {
+  type Sim = { log: string[]; exec: (m: string) => unknown };
+  const sim = () => (scope as unknown as { sim: { scope: Sim } }).sim.scope;
+  for (const r of scope.measureRows()) await scope.removeMeasurement(r.slot.id);
+  await scope.addMeasurement("FREQuency", "CHANnel1");
+  // Items that got onto the scope some other way (an earlier version asked each all-measure item, which added it).
+  sim().exec(":MEASure:ITEM VMAX,CHANnel1");
+  sim().exec(":MEASure:ITEM VMIN,CHANnel1");
+  sim().log.length = 0;
+  await scope.syncMeasurements();
+  const log = sim().log;
+  assert.equal(log[0], ":MEASure:DELete");
+  assert.deepEqual(log.filter((l) => /^:MEASure:ITEM /i.test(l)), [":MEASure:ITEM FREQuency,CHANnel1"]);
+  for (const r of scope.measureRows()) await scope.removeMeasurement(r.slot.id);
+});
+
+test("spectrum of a full-rate capture: the whole bandwidth up to half the sample rate, or a chosen span at full resolution", async () => {
+  const deep = new DeepStore();
+  const meta = await deep.capture(scope, ["CHANnel1"], 1_000_000, true, () => {});
+  const fs = 1 / meta.xinc;
+  const full = deep.analyse("CHANnel1", 0, meta.points, "hann");
+  assert.ok(Math.abs(full.nyquistHz - fs / 2) <= full.binDf, `bandwidth ${full.nyquistHz} of ${fs / 2}`);
+  assert.equal(full.f0, 0);
+  assert.ok(full.bins.length <= 4096, "a wide span is compressed for sending");
+  // The 5 kHz generator signal (period 200 µs) is the top peak.
+  const top = full.peaks[0];
+  assert.ok(Math.abs(top.hz - 5000) < 3 * full.binDf, `top peak ${top.hz}`);
+  // A narrow span around it: every bin of the record, nothing compressed, peaks only inside it.
+  const span = deep.analyse("CHANnel1", 0, meta.points, "hann", 4000, 6000);
+  assert.equal(span.df, span.binDf, "full resolution inside the span");
+  assert.ok(span.f0 <= 4000 && span.f0 > 4000 - 2 * span.binDf, `starts at ${span.f0}`);
+  assert.ok(span.f0 + span.df * (span.bins.length - 1) >= 6000 - span.binDf);
+  assert.ok(span.peaks.length > 0 && span.peaks.every((p) => p.hz >= span.f0 && p.hz <= 6000 + span.binDf));
+  assert.ok(Math.abs(span.peaks[0].hz - 5000) < 3 * span.binDf);
 });

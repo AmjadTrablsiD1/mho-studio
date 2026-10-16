@@ -234,6 +234,7 @@ const CURATED: Record<string, Partial<Control>> = {
   ":MEASure:ITEM": { hidden: true },
   ":MEASure:STATistic:ITEM": { hidden: true },
   ":MEASure:DELete": { label: "Clear all on instrument" },
+  ":MEASure:AMSource": { label: "All-measure source", primary: true, watch: true, help: "The scope measures every parameter of this channel; the app lists them under the screen." },
   ":MEASure:THReshold:TYPE": { label: "Threshold type" },
   ":MEASure:SETup:MAX": { label: "Upper threshold" },
   ":MEASure:SETup:MID": { label: "Middle threshold" },

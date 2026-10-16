@@ -3,7 +3,7 @@
   "app": {
     "id": "mho-studio",
     "name": "MHO Studio",
-    "version": "0.4.0",
+    "version": "0.4.6",
     "icon": "📈",
     "tagline": "Remote bench for RIGOL MHO900 and Teledyne LeCroy X-Stream scopes"
   },
@@ -71,7 +71,9 @@
     "request_bytes": 1048576,
     "write_timeout_ms": 5000,
     "read_timeout_ms": 60000,
-    "backstop_ms": 5000
+    "backstop_ms": 5000,
+    "clear_budget_ms": 2000,
+    "reset_settle_ms": 2000
   },
   "lecroy": {
     "_comment": "Teledyne LeCroy X-Stream oscilloscopes (WaveRunner / WavePro / WaveMaster / SDA / DDA / LabMaster, running Windows), controlled over VICP: the instrument's GPIB-style messages in 8-byte-header frames on TCP port 1861 (core/src/scpi/vicp.ts, server/vicp.ts). Commands are LeCroy's legacy remote-control set plus VBS automation (core/src/registry/lecroy.ts).",
@@ -121,6 +123,7 @@
   },
   "measure": {
     "max_items": 12,
+    "all_period_ms": 1000,
     "stats_window": 2000
   },
   "deep": {
@@ -129,6 +132,7 @@
     "csv_max_rows": 5000000
   },
   "spectrum": {
+    "max_bins_sent": 4096,
     "windows": ["hann", "blackman-harris", "flattop", "rect"],
     "default_window": "hann",
     "peaks": 8,

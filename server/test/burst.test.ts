@@ -10,6 +10,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.MHO_STUDIO_HOME = mkdtempSync(join(tmpdir(), "mho-studio-burst-"));
+process.env.MHO_STUDIO_NO_USB = "1"; // never touch a real instrument on this computer's USB
 
 const { ScopeService } = await import("../scope.ts");
 const { DeepStore } = await import("../deep.ts");

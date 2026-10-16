@@ -109,6 +109,8 @@ export class UsbtmcStream extends Duplex {
         } catch (c) {
           return void this.destroy(c as Error);
         }
+        // A link given up meanwhile must not report into whatever replaced it.
+        if (this.destroyed) return;
         this.emit(NO_REPLY, (e as Error).message);
       }
     });
@@ -124,10 +126,14 @@ export class UsbtmcStream extends Duplex {
       const tag = this.tag;
       await this.bulk.out(requestIn(tag, this.chunk), C.usb.write_timeout_ms);
       // +3: the payload is padded to a multiple of 4, and a read shorter than the transfer overflows
+      const deadline = Date.now() + timeoutMs;
       let first = await this.bulk.in(wholePackets(TMC.header + this.chunk + 3, this.bulk.maxPacket), timeoutMs);
       // A Siglent-made scope (T3DSO1204, 2026-10-14) follows a block reply with an empty transfer, which
-      // then arrives first for the next request: skip it and read again.
-      for (let z = 0; !first.length && z < 3; z++) first = await this.bulk.in(wholePackets(TMC.header + this.chunk + 3, this.bulk.maxPacket), timeoutMs);
+      // then arrives first for the next request: skip it and read again — within the same time limit, so
+      // that an instrument that keeps sending nothing is reported as silent (and cleared) before the
+      // client's backstop gives the whole link up.
+      for (let z = 0; !first.length && z < 3 && Date.now() < deadline; z++) first = await this.bulk.in(wholePackets(TMC.header + this.chunk + 3, this.bulk.maxPacket), Math.max(50, deadline - Date.now()));
+      if (!first.length) throw new Error("USB-TMC: only empty transfers came back");
       const h = parseInHeader(first);
       if (h.tag !== tag) throw new Error(`USB-TMC: reply tag ${h.tag}, expected ${tag} (a reply left over from before)`);
       const take = (b: Uint8Array) => {
@@ -243,6 +249,8 @@ let loaded: { mod: UsbModule | null; error: string | null } | null = null;
 
 async function load(): Promise<{ mod: UsbModule | null; error: string | null }> {
   if (loaded) return loaded;
+  // Tests run beside real instruments: with this set, no real USB device is listed, opened or reset.
+  if (process.env.MHO_STUDIO_NO_USB) return (loaded = { mod: null, error: "USB support did not load (switched off: MHO_STUDIO_NO_USB is set, as in the tests)." });
   try {
     const m = (await import("usb")) as unknown as UsbModule & { default?: UsbModule };
     loaded = { mod: m.usb ? m : (m.default as UsbModule), error: null };
@@ -333,6 +341,30 @@ export async function openUsb(id?: string | null): Promise<{ conn: Conn; info: U
 }
 
 /**
+ * Reset a USB instrument's port (it re-enumerates). The MHO984 once stopped
+ * answering even *IDN? after a burst of lost links (2026-10-16) until its port
+ * was reset; a clear was not enough. The device is let go afterwards.
+ */
+export async function resetUsb(id?: string | null): Promise<boolean> {
+  const { mod } = await load();
+  if (!mod) return false;
+  const devs = await mod.usb.getDevices();
+  const candidates = devs.filter((d) => tmcInterface(d) || d.vendorId === TMC.rigolVendorId);
+  const dev = id ? candidates.find((d) => idOf(d) === id) : (candidates.find((d) => d.vendorId === TMC.rigolVendorId) ?? candidates[0]);
+  if (!dev) return false;
+  try {
+    if (!dev.opened) await dev.open();
+    await (dev as unknown as { reset(): Promise<void> }).reset();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await safe(() => dev.close());
+    await new Promise((r) => setTimeout(r, C.usb.reset_settle_ms));
+  }
+}
+
+/**
  * Call into the USB library without letting it take the process down: some of
  * its calls throw synchronously (e.g. "cannot be borrowed mutably while
  * another borrow is active" when a transfer is pending) instead of rejecting.
@@ -364,11 +396,15 @@ async function retry(fn: () => Promise<unknown>, times = 10, ms = 300): Promise<
  */
 async function initiateClear(dev: UsbDevCore, iface: number): Promise<void> {
   const setup = (request: number) => ({ requestType: "class", recipient: "interface", request, value: 0, index: iface });
+  // A time budget, not a count: the MHO984 answered "pending" slowly for ~7 s after an unanswered
+  // :WAVeform:DATA? (2026-10-16), longer than the client waits before it gives the link up.
+  const deadline = Date.now() + C.usb.clear_budget_ms;
+  const left = () => Math.max(50, Math.min(1000, deadline - Date.now()));
   try {
-    const r = await dev.nativeControlTransferIn(setup(TMC.initiateClear), 1000, 1);
+    const r = await dev.nativeControlTransferIn(setup(TMC.initiateClear), left(), 1);
     if (!r || r[0] !== TMC.statusSuccess) return;
-    for (let i = 0; i < 20; i++) {
-      const s = await dev.nativeControlTransferIn(setup(TMC.checkClearStatus), 1000, 2);
+    while (Date.now() < deadline) {
+      const s = await dev.nativeControlTransferIn(setup(TMC.checkClearStatus), left(), 2);
       if (!s || s[0] !== TMC.statusPending) return;
       await new Promise((res) => setTimeout(res, 50));
     }

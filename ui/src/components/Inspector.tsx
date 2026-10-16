@@ -8,6 +8,7 @@ import { fmt } from "../../../core/src/format.ts";
 
 import { action, attempt, post, readGroup, useLive } from "../api.ts";
 import { setUi, useUi, type Section } from "../uistate.ts";
+import { AllMeasureGrid, SyncMeasurementsButton } from "./AllMeasure.tsx";
 import { Ctl, GroupPanel } from "./Controls.tsx";
 import { ItemSelect, RemoveButton, SourceSelect } from "./Measurements.tsx";
 import { sourceLabel } from "../theme.ts";
@@ -305,7 +306,13 @@ function Measure() {
         <button className="btn primary block" data-test="measure-add" onClick={() => void attempt(() => post("measure/add", { item, src1, src2: m.dual ? src2 : undefined }))}>Add measurement</button>
       </div>
       <div className="section">
-        <div className="section-title"><span>Active</span>{rows.length > 0 && <button className="btn small" onClick={() => void attempt(() => post("measure/reset"))}>Reset statistics</button>}</div>
+        <div className="section-title">
+          <span>Active</span>
+          <span className="row" style={{ gap: 4 }}>
+            {r.family === "rigol" && <SyncMeasurementsButton />}
+            {rows.length > 0 && <button className="btn small" onClick={() => void attempt(() => post("measure/reset"))}>Reset statistics</button>}
+          </span>
+        </div>
         {rows.length === 0 && <p className="body-text">None yet. They appear under the screen with running statistics and the app's own cross-check.</p>}
         {rows.length > 0 && <p className="body-text" style={{ margin: "0 0 4px" }}>Change a row's quantity or channel right here (or in the table under the screen); × removes it.</p>}
         {rows.map((r, index) => {
@@ -333,6 +340,8 @@ function Measure() {
           <div className="section-title">All-measure</div>
           <Ctl id="measure.amsource" />
           <Ctl id="measure.statistic.display" label="Stats on screen" />
+          <p className="body-text" style={{ margin: "4px 0" }}>With a source chosen, the scope shows every parameter of that channel on its screen. The guide has no command to read that table, so the app computes the same parameters from its own screen record and lists them under the screen and here — without asking the scope anything more.</p>
+          <AllMeasureGrid compact />
         </div>
       )}
     </>
