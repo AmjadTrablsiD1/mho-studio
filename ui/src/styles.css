@@ -106,6 +106,9 @@ button.pill:hover { border-color: var(--active-line); color: var(--text); }
 .chan-card:hover { border-color: var(--active-line); }
 .chan-card.selected { border-color: var(--active-line); background: var(--active); }
 .chan-card.off .bar { opacity: .35; }
+/* Off must read as off even on the selected card (CH1 is selected by default): no filled
+   highlight, a dashed outline, and an OFF tag — all at full text contrast. */
+.chan-card.selected.off { background: transparent; border-style: dashed; }
 .chan-card.off .c-scale { color: var(--secondary); }
 .chan-card .bar { grid-row: 1 / span 2; align-self: stretch; border-radius: 0 2px 2px 0; }
 .chan-card .c-name { font-size: 11px; font-weight: 600; letter-spacing: .3px; }

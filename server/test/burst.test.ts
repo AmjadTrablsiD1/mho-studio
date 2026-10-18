@@ -63,6 +63,8 @@ for (const family of ["rigol", "lecroy"] as const) {
     for (const ch of [1, 2, 3, 4]) if (ch !== clock) await scope.write(`channel.display@${ch}`, false);
     const s = await runner.run(scope, checkBurst({ trigger: clock, level: C.sim.clock_v / 2, windowS: 10e-6, waitS: 5, channels: [clock], maxPoints: 1_000_000 }), () => {});
     assert.equal(s.phase, "done", s.error ?? "");
+    // CH3 is off at the simulated MHO984's power-on: switched on for the capture, and the result says so.
+    if (family === "rigol") assert.ok(s.notes.some((n) => /^CH3 was off and switched on for the capture.*it stays on/.test(n)), s.notes.join(" | "));
     const r = s.results[0];
     assert.equal(r.ch, clock);
     // 10 µs asked → 2 µs/div, 18 µs after the trigger and 2 µs before it: 1 MHz gives about 20 rising edges.

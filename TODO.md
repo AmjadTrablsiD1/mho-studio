@@ -69,6 +69,10 @@
 - Why it failed on 2026-10-14: over **LAN** the computer's adapter had a self-assigned 169.254.x address, so 10.11.13.220 was routed to the office network (connect help now says how to address a direct cable); over **USB** the app took it for a LeCroy X-Stream ("Lecroy," in *IDN?) and sent X-Stream commands, read the empty transfer that follows each block as a broken reply and dropped the link, and kept the interface claimed afterwards. Fixed: family by model; empty transfers skipped; the release retried; double newlines after a block and text before it handled; a raw BMP read by its own length.
 - Screen grid, edge capture and record length use the family's division count (14 on a T3DSO); inspector, console, instrument, deep and spectrum views take family facts from the registry instead of "LeCroy or not".
 
+## Done (0.5.4, 2026-10-18)
+
+- **"CH1 stays active after I switch it off"** — checked on the app side (the scope was not reachable that day): connecting writes nothing that turns a channel on (only `*CLS`; no saved measurements to restore), and a CH1 switched off stays off across a reconnect on the simulator. Three app-side causes found and fixed: an off channel that is the selected one (CH1 by default) kept the filled "selected" look — now a dashed outline and an OFF tag; Spectrum kept analysing — and for Full rate capturing — CH1 after it was switched off while its list already showed CH2; Edge capture switched the trigger channel (CH1 by default) on and left it on silently — it now says so in its notes. Before 0.5.1 the shifted replies could also make the app believe a channel was on. **Still to check on the real MHO984:** switch CH1 off at the scope, connect, and see whether the scope itself turns it back on.
+
 ## Done (0.5.3, 2026-10-18)
 
 - **`main` is the release branch** (fast-forwarded to the work of `lecroy-and-windows`); the updater follows `main` on every copy, whatever branch it was installed from.

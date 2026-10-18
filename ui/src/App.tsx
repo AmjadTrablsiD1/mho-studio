@@ -262,6 +262,7 @@ function Rail() {
                   <button className="switch" role="switch" aria-checked={on} aria-label={`CH${n} on`} onClick={() => void attempt(() => writeControl(key("channel.display", n), !on))} />
                 </div>
                 <div className="c-tags">
+                  {!on && <span className="tag" data-test={`chan-off-${n}`}>OFF</span>}
                   {coup && <span className="tag">{coup === "DC" || coup === "D1M" ? "DC" : coup === "AC" || coup === "A1M" ? "AC" : coup === "D50" ? "DC" : "GND"}</span>}
                   {coup === "D50" && <span className="tag" style={{ color: "var(--gold)" }}>50Ω</span>}
                   {coup === "OVL" && <span className="tag" style={{ color: "var(--coral)" }} title="The 50 Ω input was overloaded and the instrument disconnected it. Reduce the signal, then set the coupling again.">50Ω OVERLOAD</span>}

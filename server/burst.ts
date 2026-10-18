@@ -322,7 +322,14 @@ export class BurstRunner {
         };
 
         // 1. Every channel to be measured is on (an instrument records only displayed channels).
-        for (const ch of new Set([cfg.trigger, ...cfg.channels])) if (scope.values.get(key("channel.display", ch)) !== true) await write(key("channel.display", ch), true);
+        // They stay on afterwards (the captured record is on the instrument's screen), and the result says so.
+        const switchedOn: number[] = [];
+        for (const ch of new Set([cfg.trigger, ...cfg.channels])) {
+          if (scope.values.get(key("channel.display", ch)) === true) continue;
+          await write(key("channel.display", ch), true);
+          switchedOn.push(ch);
+        }
+        if (switchedOn.length) notes.push(`${switchedOn.map((n) => `CH${n}`).join(", ")} ${switchedOn.length > 1 ? "were" : "was"} off and switched on for the capture (the trigger channel and every measured channel must be on); ${switchedOn.length > 1 ? "they stay" : "it stays"} on — switch ${switchedOn.length > 1 ? "them" : "it"} off again if you do not need ${switchedOn.length > 1 ? "them" : "it"}.`);
 
         // 2. An edge trigger on the chosen channel and slope.
         const mode = option("trigger.mode", /^edge$/i);

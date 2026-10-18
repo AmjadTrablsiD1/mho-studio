@@ -45,7 +45,10 @@ export function SpectrumView() {
     for (let n = 1; n <= 4; n++) if (values[`channel.display@${n}`] === true) out.push(`CHANnel${n}`);
     return out;
   }, [values]);
-  const [src, setSrc] = useState("CHANnel1");
+  const [chosen, setSrc] = useState("CHANnel1");
+  // The source is always a displayed channel: CH1 switched off must not stay the one analysed (or
+  // captured at full rate) while the list already shows the next channel.
+  const src = sources.includes(chosen) || !sources.length ? chosen : sources[0];
   const [win, setWin] = useState<WindowName>(C.spectrum.default_window as WindowName);
   const [avg, setAvg] = useState(4);
   const [logx, setLogx] = useState(false);

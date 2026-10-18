@@ -207,6 +207,24 @@ test("updates: the dialog says what is installed; a copy run from its source fol
   await expect(page.getByTestId("update-dialog")).toHaveCount(0);
 });
 
+test("CH1 switched off: its card reads as off although selected, its trace is gone, and Spectrum moves to the next channel", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  test.skip(theme !== "midnight", "behaviour, not styling");
+  await open(page, theme);
+  await page.getByRole("switch", { name: "CH1 on" }).click();
+  await expect(page.getByRole("switch", { name: "CH1 on" })).toHaveAttribute("aria-checked", "false");
+  await expect(page.getByTestId("chan-1")).toHaveClass(/selected/);
+  await expect(page.getByTestId("chan-1")).toHaveClass(/off/);
+  await expect(page.getByTestId("chan-off-1")).toHaveText("OFF");
+  expect(await page.getByTestId("chan-1").evaluate((e) => getComputedStyle(e).borderStyle)).toBe("dashed");
+  await axe(page, "CH1 off");
+  const state = await page.evaluate(() => fetch("./api/state").then((r) => r.json()));
+  expect(state.values["channel.display@1"]).toBe(false);
+  await page.getByTestId("nav-spectrum").click();
+  await expect(page.getByLabel("Source")).toHaveValue("CHANnel2");
+  await expect(page.getByTestId("spectrum-nyquist")).toHaveText(/\d.*Hz/); // a spectrum of CH2, not "waiting for CH1"
+});
+
 test("spectrum: on a narrow window the span fields stay in view; a stop above the record's reach raises it, out of ROLL too", async ({ page }, info) => {
   const theme = info.project.metadata.theme as string;
   test.skip(theme !== "midnight", "behaviour, not styling");
