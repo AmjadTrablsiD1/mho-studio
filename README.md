@@ -33,13 +33,25 @@ NI drivers. Comes with a **simulated MHO984**, a **simulated LeCroy** and a
 
 ## Install and run
 
-```bash
-./install.sh
-```
+### macOS — on any Mac, no Xcode needed
 
-Then double-click **MHO Studio** in App Launcher, or `~/Desktop/Apps/MHO Studio.app`
-(or the `.command` next to it). It opens in your browser; a second double-click
-brings back the running one. Needs Node 22.18 or newer.
+1. Install **Node.js 22 LTS** (22.18 or newer): the macOS Installer (.pkg) from
+   <https://nodejs.org/en/download>. No Homebrew or Xcode needed.
+2. Download this repository (green **Code → Download ZIP**, branch `main`) and
+   unzip it.
+3. Double-click **`Install MHO Studio.command`** in the unzipped folder. The
+   first time, macOS refuses a file from a downloaded ZIP: right-click → **Open**
+   (macOS 15: System Settings → Privacy & Security → **Open Anyway**).
+4. It builds and installs (a minute or two, needs internet) and starts the app.
+   From then on, start it with **`~/Desktop/Apps/MHO Studio.command`** (and the
+   App Launcher tile on a Mac that has App Launcher).
+
+If macOS asks to install "command line developer tools", cancel: nothing here
+needs them (the installer no longer touches the `git` and `python3`
+placeholders that ask for them). Updates then come from inside the app (⤓).
+
+From a terminal in a checkout: `./install.sh`. It opens in your browser; a
+second double-click brings back the running one.
 
 **Updating.** The **⤓ Updates** button (top right; a gold dot when there is
 something new) compares this copy with a branch of

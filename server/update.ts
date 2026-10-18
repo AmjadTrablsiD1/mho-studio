@@ -114,7 +114,8 @@ export class Updater {
       /* default on */
     }
     this.state = {
-      version: C.app.version, build, where, branch: build?.branch || C.update.branch,
+      // Every copy follows the release branch, whichever branch it was installed from (another can be picked in the dialog).
+      version: C.app.version, build, where, branch: C.update.branch,
       checking: false, checkedAt: null, latest: null, newer: [], newerCount: 0, available: false, ahead: 0, note: null, installing: null, error: null, autoCheck,
     };
   }

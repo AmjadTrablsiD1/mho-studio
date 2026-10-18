@@ -38,11 +38,12 @@ const commit = (sha: string, message: string) => ({ sha, commit: { message, auth
 const gh = createServer((req, res) => {
   const u = req.url ?? "";
   const send = (body: unknown) => (res.writeHead(200, { "Content-Type": "application/json" }), res.end(JSON.stringify(body)));
-  if (u.includes("/commits/lecroy-and-windows")) return send(commit(NEW, "Spectrum: memory depth raised for a full-rate span\n\nbody"));
+  if (u.includes(`/commits/${C.update.branch}`)) return send(commit(NEW, "Spectrum: memory depth raised for a full-rate span\n\nbody"));
   if (u.includes("/commits/odd")) return send(commit(ODD, "not this app"));
   if (u.includes(`/compare/${OLD}...${NEW}`)) return send({ ahead_by: 2, behind_by: 0, commits: [commit("d".repeat(40), "first"), commit(NEW, "Spectrum: memory depth raised for a full-rate span")] });
   if (u.includes("/branches")) return send([{ name: "main" }, { name: "lecroy-and-windows" }]);
-  if (u.endsWith("/shared/constants.json")) return send({ app: { id: C.app.id, version: "0.5.2" } });
+  // Far above any real version, so the test does not depend on this app's own number.
+  if (u.endsWith("/shared/constants.json")) return send({ app: { id: C.app.id, version: "50.0.0" } });
   const t = /\/tar\.gz\/([0-9a-f]{40})$/.exec(u);
   if (t && tars[t[1]]) {
     res.writeHead(200, { "Content-Type": "application/gzip" });
@@ -75,12 +76,12 @@ test("versions compare by number, not by text", () => {
 test("a check lists what the installed copy lacks (build.json with a byte-order mark, as PowerShell writes it)", async () => {
   const u = new Updater(() => {}, installed(OLD));
   assert.equal(u.state.where, "installed");
-  assert.equal(u.state.branch, "lecroy-and-windows");
+  assert.equal(u.state.branch, "main", "copies follow main, whatever branch they were installed from");
   const st = await u.check();
   assert.equal(st.available, true);
   assert.equal(st.newerCount, 2);
   assert.deepEqual(st.newer.map((c) => c.message), ["Spectrum: memory depth raised for a full-rate span", "first"]);
-  assert.equal(st.latest?.version, "0.5.2");
+  assert.equal(st.latest?.version, "50.0.0");
   assert.equal(st.latest?.sha, NEW);
   // Up to date: nothing offered.
   assert.equal((await new Updater(() => {}, installed(NEW)).check()).available, false);
@@ -88,14 +89,14 @@ test("a check lists what the installed copy lacks (build.json with a byte-order 
 });
 
 test("an installed copy newer than the branch (local changes not pushed) is not offered the older one", async () => {
-  // The fake branch's constants say 0.5.2; pretend this app is newer by checking against a version below it.
+  // The fake branch's constants say 50.0.0; pretend this app is newer than that.
   const u = new Updater(() => {}, installed("e".repeat(40))); // a commit GitHub does not know
   const real = C.app.version;
-  (C.app as { version: string }).version = "0.6.0";
+  (C.app as { version: string }).version = "60.0.0";
   try {
     const st = await u.check();
     assert.equal(st.available, false);
-    assert.match(st.note ?? "", /This copy \(0\.6\.0\) is newer than lecroy-and-windows on GitHub \(0\.5\.2\): push your changes/);
+    assert.match(st.note ?? "", /This copy \(60\.0\.0\) is newer than main on GitHub \(50\.0\.0\): push your changes/);
   } finally {
     (C.app as { version: string }).version = real;
   }

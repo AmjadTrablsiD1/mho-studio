@@ -3,7 +3,7 @@
   "app": {
     "id": "mho-studio",
     "name": "MHO Studio",
-    "version": "0.5.2",
+    "version": "0.5.3",
     "icon": "📈",
     "tagline": "Remote bench for RIGOL MHO900 and Teledyne LeCroy X-Stream scopes"
   },
@@ -21,7 +21,7 @@
   "update": {
     "_comment": "The in-app updater (server/update.ts): compares the installed commit (build.json, written by the installers) with a branch of this GitHub repo, downloads that exact commit and runs the platform's installer on it. MHO_STUDIO_UPDATE_API / _RAW / _CODELOAD replace the hosts in tests.",
     "repo": "AmjadTrablsiD1/mho-studio",
-    "branch": "lecroy-and-windows",
+    "branch": "main",
     "api": "https://api.github.com",
     "raw": "https://raw.githubusercontent.com",
     "codeload": "https://codeload.github.com",
