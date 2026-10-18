@@ -56,12 +56,29 @@ New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 robocopy $Src $Dest /MIR /NFL /NDL /NJH /NJS /NP /XD .git node_modules test-results playwright-report screenshots .github packaging /XF .DS_Store | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "copying the files failed (robocopy exit $LASTEXITCODE)" }
 
-# 5. The server's one optional dependency (USB-TMC). Without it, LAN and the simulators still work.
-Step "Installing USB support (optional)"
+# 4b. What was installed, for the in-app updater (server/update.ts): the branch and commit, from
+#     git when this is a checkout, from the updater when it downloaded the commit itself.
+$Branch = $env:MHO_STUDIO_UPDATE_BRANCH; $Commit = $env:MHO_STUDIO_UPDATE_COMMIT; $Dirty = $false; $From = "update"
+if (-not $Commit) {
+  $From = "folder"
+  $git = Get-Command git -ErrorAction SilentlyContinue
+  if ($git -and (Test-Path (Join-Path $Src ".git"))) {
+    $From = "git"
+    $Branch = (& git -C $Src rev-parse --abbrev-ref HEAD).Trim()
+    $Commit = (& git -C $Src rev-parse HEAD).Trim()
+    $Dirty = [bool](& git -C $Src status --porcelain)
+  }
+}
+@{ branch = "$Branch"; commit = "$Commit"; dirty = $Dirty; from = $From; installedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") } |
+  ConvertTo-Json -Compress | Set-Content -Encoding UTF8 (Join-Path $Dest "build.json")
+
+# 5. The server's optional dependencies: USB-TMC (the scope) and serial (the STM32 board's Si5351).
+#    Without them, LAN and the simulators still work.
+Step "Installing USB and serial support (optional)"
 Push-Location (Join-Path $Dest "server")
 try {
   & $Npm install --omit=dev --no-audit --no-fund
-  if ($LASTEXITCODE -ne 0) { Write-Host "note: USB support could not be installed; LAN and the simulators still work." -ForegroundColor Yellow }
+  if ($LASTEXITCODE -ne 0) { Write-Host "note: USB and serial support could not be installed; LAN and the simulators still work." -ForegroundColor Yellow }
 } finally { Pop-Location }
 
 # 6. Shortcuts: node.exe running the server, which opens the browser. The console window

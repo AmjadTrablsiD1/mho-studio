@@ -8,10 +8,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.MHO_STUDIO_HOME = mkdtempSync(join(tmpdir(), "mho-studio-test-"));
 process.env.MHO_STUDIO_NO_USB = "1"; // never touch a real instrument on this computer's USB
+process.env.MHO_STUDIO_NO_SERIAL = "1"; // nor the STM32 board on its serial port
 
 const { ScopeService } = await import("../scope.ts");
 const { DeepStore } = await import("../deep.ts");
 const { BodeRunner, checkConfig } = await import("../bode.ts");
+const { BoardService } = await import("../board.ts");
 
 const events: { type: string; data: unknown }[] = [];
 const scope = new ScopeService((type, data) => events.push({ type, data }));
@@ -186,6 +188,83 @@ test("Bode sweep of the simulated low-pass finds fc = 20 kHz and puts every sett
   assert.equal(scope.values.get("timebase.scale"), before.tb);
   assert.equal(scope.values.get("source.frequency@1"), before.f);
   assert.equal(scope.values.get("channel.scale@2"), before.s2);
+});
+
+test("Bode sweep driven by the STM32 board's Si5351 finds the same corner and puts the board and the scope back", async () => {
+  const board = new BoardService();
+  const runner = new BodeRunner();
+  // Not connected yet: refused before anything is touched.
+  assert.throws(() => runner.check(scope, checkConfig({ generator: "board" }), board), /connect the STM32 board first/);
+  assert.throws(() => checkConfig({ generator: "board", startHz: 1000 }), /for the Si5351.*2\.5 kHz/);
+  await board.connect("sim");
+  after(() => board.disconnect().catch(() => {}));
+  await board.set(0, 1e6, false);
+  await board.drive(0, 1);
+  const before = { c1: scope.values.get("channel.coupling@1"), tb: scope.values.get("timebase.scale"), gen: scope.values.get("source.frequency@1") };
+  const st = await runner.run(scope, checkConfig({ generator: "board", clk: 0, drive: 3, startHz: 2500, stopHz: 200000, points: 14, settleMs: 20 }), () => {}, board);
+  assert.equal(st.error, null);
+  assert.match(st.generator ?? "", /CLK0 \(Si5351, 8 mA\)/);
+  assert.equal(st.points.length, 14);
+  assert.ok(Math.abs(st.corner!.hz - 20000) / 20000 < 0.08, `corner ${st.corner!.hz}`);
+  assert.ok(Math.abs(st.corner!.phaseDeg + 90) < 8, `phase ${st.corner!.phaseDeg}`);
+  // The square's fundamental: 4/π × 1.65 V.
+  assert.ok(Math.abs(st.points[0].vin - (4 / Math.PI) * 1.65) < 0.05, `vin ${st.points[0].vin}`);
+  // Each point is at the frequency the board reported.
+  const sent = board.sim!.log.filter((l) => l.cmd === 0x71).length;
+  assert.ok(sent >= 14, `ClkFreq commands ${sent}`);
+  // The board is as it was: CLK0 off at 1 MHz, 4 mA; not held.
+  const c0 = await board.get(0);
+  assert.deepEqual({ on: c0.on, hz: c0.hz, drive: c0.drive }, { on: false, hz: 1e6, drive: 1 });
+  assert.equal(board.state.busy, null);
+  await scope.readKeys(["channel.coupling@1", "timebase.scale", "source.frequency@1"]);
+  assert.equal(scope.values.get("channel.coupling@1"), before.c1);
+  assert.equal(scope.values.get("timebase.scale"), before.tb);
+  assert.equal(scope.values.get("source.frequency@1"), before.gen);
+  assert.match(runner.csv(), /generator STM32 board CLK0/);
+  await board.disconnect();
+});
+
+test("Bode on a board output that is not the one wired to CH1 stops at the first point and says so", async () => {
+  const board = new BoardService();
+  await board.connect("sim");
+  try {
+    await board.set(0, 1e6, true); // CLK0 is on the bench's tee; the sweep is told to use CLK1
+    const runner = new BodeRunner();
+    const st = await runner.run(scope, checkConfig({ generator: "board", clk: 1, startHz: 5000, stopHz: 50000, points: 4, settleMs: 20 }), () => {}, board);
+    // (1 MHz on a screen set for 5 kHz is undersampled, so the rate CH1 "shows" is an alias — it is still not 5 kHz.)
+    assert.match(st.error ?? "", /CH1 shows .*, not the 5(\.000)? kHz from STM32 board CLK1.*wired to CH1/);
+    assert.equal(st.points.length, 0);
+    assert.equal((await board.get(1)).on, false, "CLK1 put back off");
+  } finally {
+    await board.set(0, 1e6, false);
+    await board.disconnect();
+  }
+});
+
+test("Bode sweep driven by the board's DAC sine: same corner, each point at the DAC's own frequency, the DAC stopped afterwards", async () => {
+  const { SimBoard, planDacSine } = await import("../../sim/board.ts");
+  assert.throws(() => checkConfig({ generator: "dac", stopHz: 100000 }), /for the board's DAC.*60 kHz/);
+  assert.throws(() => checkConfig({ generator: "dac", amplitudeVpp: 3.3 }), /at most 3 Vpp/);
+  const board = new BoardService();
+  // It was playing the FDM waveform before: reported, not silently lost.
+  board.simFactory = () => new SimBoard({ dac: { running: true, source: 1, length: 4096, rateHz: 100000 } });
+  await board.connect("sim");
+  try {
+    const runner = new BodeRunner();
+    const st = await runner.run(scope, checkConfig({ generator: "dac", amplitudeVpp: 1, startHz: 1000, stopHz: 60000, points: 12, settleMs: 20 }), () => {}, board);
+    assert.equal(st.error, null);
+    assert.match(st.generator ?? "", /DAC \(PC4, 1 Vpp sine\)/);
+    assert.ok(Math.abs(st.corner!.hz - 20000) / 20000 < 0.08, `corner ${st.corner!.hz}`);
+    assert.ok(Math.abs(st.points[0].vin - 0.5) < 0.02, `vin ${st.points[0].vin}`);
+    // The axis is the DAC's frequencies, not the plan's.
+    const asked = [1000, 60000];
+    assert.equal(st.points[0].hz, planDacSine(asked[0]).hz);
+    assert.ok(st.points.some((p, i) => i > 0 && i < st.points.length - 1 && p.hz !== Math.round(p.hz)), "fractional, achieved frequencies");
+    assert.equal(board.state.dac?.running, false);
+    assert.ok(st.notes.some((n) => /playing the FDM waveform before the sweep/.test(n)), st.notes.join(" | "));
+  } finally {
+    await board.disconnect();
+  }
 });
 
 test("measurements survive a reconnect: the app lists them again and the instrument shows exactly them", async () => {

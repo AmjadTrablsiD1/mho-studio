@@ -16,6 +16,8 @@ import type { WindowName } from "../core/src/dsp/window.ts";
 import { HttpError, ScopeService } from "./scope.ts";
 import { DeepStore } from "./deep.ts";
 import { BodeRunner, checkConfig } from "./bode.ts";
+import { BoardService, listBoardPorts } from "./board.ts";
+import { Updater } from "./update.ts";
 import { BurstRunner, checkBurst } from "./burst.ts";
 import { discover } from "./discover.ts";
 import { listUsb } from "./usbtmc.ts";
@@ -112,6 +114,7 @@ if (!flag("api-only") && !existsSync(join(DIST, "index.html"))) {
 // ------------------------------------------------------------ subscribers
 
 const clients = new Set<ServerResponse>();
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function broadcast(type: string, data: unknown): void {
   const frame = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) res.write(frame);
@@ -120,6 +123,12 @@ function broadcast(type: string, data: unknown): void {
 const scope = new ScopeService(broadcast);
 const deep = new DeepStore();
 const bode = new BodeRunner();
+const board = new BoardService((s) => broadcast("board", s));
+const updater = new Updater((s) => broadcast("update", s));
+updater.onLaunched = () => {
+  log("update: the installer runs on its own; disconnecting and stopping");
+  setTimeout(() => shutdown(), 500);
+};
 const burst = new BurstRunner(deep);
 
 // ------------------------------------------------------------------- http
@@ -185,7 +194,7 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
       json(res, 200, { token: TOKEN, header: C.server.token_header });
     },
   },
-  { method: "GET", path: /^\/api\/state$/, mutate: false, handler: async (_q, res) => json(res, 200, { ...scope.snapshot(), bode: bode.state, burst: burst.state, deep: deep.meta, presets: listPresets() }) },
+  { method: "GET", path: /^\/api\/state$/, mutate: false, handler: async (_q, res) => json(res, 200, { ...scope.snapshot(), bode: bode.state, board: board.state, update: updater.state, burst: burst.state, deep: deep.meta, presets: listPresets() }) },
   {
     method: "GET", path: /^\/api\/stream$/, mutate: false,
     handler: async (req, res) => {
@@ -193,9 +202,13 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
       res.write(`retry: ${C.ui.sse_retry_ms}\n\n`);
       clients.add(res);
       scope.viewers = clients.size;
+      everViewed = true;
+      if (lonely) clearTimeout(lonely);
+      lonely = null;
       req.on("close", () => {
         clients.delete(res);
         scope.viewers = clients.size;
+        if (!clients.size) whenLonely();
       });
     },
   },
@@ -427,7 +440,8 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
     handler: async (req, res) => {
       const cfg = checkConfig(await body(req));
       if (bode.state.running) throw new HttpError(409, "a sweep is already running");
-      void bode.run(scope, cfg, (s) => broadcast("bode", s));
+      bode.check(scope, cfg, board);
+      void bode.run(scope, cfg, (s) => broadcast("bode", s), board);
       json(res, 202, { started: true, config: cfg });
     },
   },
@@ -439,9 +453,47 @@ const routes: { method: string; path: RegExp; mutate: boolean; handler: Route }[
       res.end(bode.csv());
     },
   },
+  // ---------------------------------------------------------------- update (from the GitHub repo)
+  {
+    method: "POST", path: /^\/api\/update\/check$/, mutate: true,
+    handler: async (req, res) => {
+      const b = await body(req);
+      json(res, 200, await updater.check(b.branch ? String(b.branch) : undefined));
+    },
+  },
+  { method: "POST", path: /^\/api\/update\/branches$/, mutate: true, handler: async (_q, res) => json(res, 200, { branches: await updater.branches() }) },
+  { method: "POST", path: /^\/api\/update\/auto$/, mutate: true, handler: async (req, res) => json(res, 200, updater.setAutoCheck((await body(req)).on === true)) },
+  {
+    method: "POST", path: /^\/api\/update\/install$/, mutate: true,
+    handler: async (req, res) => {
+      const b = await body(req);
+      json(res, 202, await updater.install(String(b.sha ?? ""), b.branch ? String(b.branch) : undefined, jobRunning() ?? board.state.busy));
+    },
+  },
+  // ---------------------------------------------------------------- board (STM32H743 + Si5351)
+  { method: "POST", path: /^\/api\/board\/ports$/, mutate: true, handler: async (_q, res) => json(res, 200, await listBoardPorts()) },
+  {
+    method: "POST", path: /^\/api\/board\/connect$/, mutate: true,
+    handler: async (req, res) => {
+      const b = await body(req);
+      if (!b.path) throw new HttpError(400, "which port?");
+      json(res, 200, await board.connect(String(b.path)));
+    },
+  },
+  { method: "POST", path: /^\/api\/board\/disconnect$/, mutate: true, handler: async (_q, res) => (await board.disconnect(), json(res, 200, board.state)) },
+  {
+    method: "POST", path: /^\/api\/board\/detect$/, mutate: true,
+    handler: async (req, res) => {
+      const b = await body(req);
+      json(res, 200, await board.detect(num(b.xtalHz, C.board.si5351.xtal_hz), num(b.load, C.board.si5351.load)));
+    },
+  },
   {
     method: "POST", path: /^\/api\/quit$/, mutate: true,
-    handler: async (_q, res) => {
+    handler: async (req, res) => {
+      const job = jobRunning();
+      if (job && (await body(req)).confirmed !== true) throw new HttpError(409, `The ${job} is still running. Quit anyway? It stops after the current step and puts the scope's settings back, then the app disconnects and stops.`);
+      log("quit from the window: disconnecting and stopping");
       json(res, 200, { quitting: true });
       setTimeout(shutdown, 50);
     },
@@ -495,6 +547,9 @@ void replacePrevious().then(() => server.listen(Number(explicitPort ?? C.server.
   if (!flag("no-open")) openBrowser(url);
   // Reconnect to where we were last time, without blocking the window.
   const s = loadSettings();
+  if (flag("sim-board")) void board.connect("sim").catch(() => {});
+  // Reads only (the newest commit on GitHub); the tests and --stay runs never ask.
+  if (!process.env.MHO_STUDIO_NO_UPDATE_CHECK && !flag("stay")) updater.startAutoCheck();
   if (flag("sim")) void scope.connect({ sim: true, simModel: flag("lecroy") ? "lecroy" : flag("siglent") ? "siglent" : "rigol" }).catch(() => {});
   else if (flag("no-autoconnect")) return;
   else if (s.lastKind === "sim") void scope.connect({ sim: true, simModel: s.simModel }).catch(() => {});
@@ -502,18 +557,54 @@ void replacePrevious().then(() => server.listen(Number(explicitPort ?? C.server.
   else if (s.lastKind === "tcp" && s.host) void scope.connect({ host: s.host, port: s.port, protocol: s.protocol }).catch(() => {});
 }));
 
+// ----------------------------------------------------------- lifetime
+//
+// The app is its windows: when the last one closes (and no reload brings one
+// back within no_viewer_stop_s), the scope and the board are disconnected and
+// the server stops, so nothing stays connected to the instrument in the
+// background. A running sweep or capture is finished first. --stay keeps the
+// server up without a window (the test suite, development).
+
+/** A long job that should finish — and put the scope's settings back — before the app goes. */
+const jobRunning = (): string | null => (bode.state.running ? "Bode sweep" : burst.state.running ? "edge capture" : scope.busy);
+let everViewed = false;
+let lonely: ReturnType<typeof setTimeout> | null = null;
+function whenLonely(): void {
+  if (flag("stay") || !everViewed || clients.size || shuttingDown) return;
+  if (lonely) clearTimeout(lonely);
+  lonely = setTimeout(() => {
+    lonely = null;
+    if (clients.size) return;
+    const job = jobRunning();
+    if (job) {
+      log(`last window closed; waiting for the ${job} to finish before stopping`);
+      return whenLonely();
+    }
+    log("last window closed: disconnecting and stopping");
+    shutdown();
+  }, Number(value("idle-stop-s") ?? C.server.no_viewer_stop_s) * 1000);
+}
+
 let shuttingDown = false;
 const shutdown = () => {
   if (shuttingDown) return;
   shuttingDown = true;
-  setTimeout(() => process.exit(0), C.server.shutdown_grace_ms).unref();
+  // Never longer than this, whatever hangs.
+  setTimeout(() => process.exit(0), C.server.job_stop_wait_ms + C.server.shutdown_grace_ms).unref();
   bode.stop();
   burst.stop();
   deep.cancel();
-  void scope.stop().finally(() => {
+  void (async () => {
+    // A stopped sweep or capture puts the scope's (and the board's) settings back after its current step.
+    const until = Date.now() + C.server.job_stop_wait_ms;
+    while ((bode.state.running || burst.state.running) && Date.now() < until) await sleep(100);
+    board.state.busy = null;
+    await board.disconnect().catch(() => {});
+    await scope.stop().catch(() => {});
     for (const c of clients) c.end();
     server.close(() => process.exit(0));
-  });
+    setTimeout(() => process.exit(0), C.server.shutdown_grace_ms).unref();
+  })();
   try {
     if (!explicitPort && existsSync(PORT_FILE)) unlinkSync(PORT_FILE);
   } catch {

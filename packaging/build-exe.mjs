@@ -11,9 +11,10 @@
 //
 // How (Node's "single executable application" feature):
 //  1. esbuild bundles server/main.ts and everything it imports into one
-//     CommonJS file. The optional `usb` package stays out (a native module
-//     cannot live inside the file), so the .exe reaches scopes over LAN —
-//     LeCroy VICP and RIGOL raw SCPI — and the simulators, not RIGOL USB.
+//     CommonJS file. The optional `usb` and `serialport` packages stay out (a
+//     native module cannot live inside the file), so the .exe reaches scopes
+//     over LAN — LeCroy VICP and RIGOL raw SCPI — and the simulators, not RIGOL
+//     USB, and offers only the simulated STM32 board.
 //  2. The built interface (ui/dist) goes in as assets. On start the exe
 //     unpacks it once into %LOCALAPPDATA%\mho-studio\ui-<hash> and tells the
 //     server where (MHO_STUDIO_DIST).
@@ -90,7 +91,7 @@ await build({
   format: "cjs",
   target: "node22",
   outfile: bundle,
-  external: ["usb"],
+  external: ["usb", "serialport"],
   banner: { js: unpack },
   logLevel: "warning",
   // import.meta has no meaning in CommonJS; main.ts falls back to process.execPath.

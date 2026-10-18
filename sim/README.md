@@ -20,6 +20,30 @@ UART TX 115200 8N1 "MHO984\r\n" every 2 ms ── CH4
 Power-on state: CH1 and CH2 on at 500 mV/div (offsets ±1 V), 100 µs/div,
 GEN 1 on at 5 kHz 2 Vpp sine, edge trigger on CH1 rising at 0 V.
 
+### The simulated STM32 board (since 0.5.0)
+
+`sim/board.ts` answers the board's command link (`core/src/board/protocol.ts`):
+Ping, GetVersion, ClkInit, ClkFreq, ClkGet, ClkDrive, ClkSweep, DacSine,
+DacPlay, DacStatus, with a log line before each ClkFreq reply as the firmware
+prints one. The DAC sine is chosen as `dac_play.cpp` does: a table of
+~400 kHz ÷ f entries (16–1024), a timer rate that divides 240 MHz, frequency =
+rate ÷ length, clamped to 1 Hz – 60 kHz. Its Si5351 plan is an
+approximation of the firmware's (even integer output divider, 600–900 MHz VCO,
+2^20−1 fractional denominator, R divider below 500 kHz), so the reported
+frequency is the planned one, not the requested one. While the DAC plays a
+sine, that sine — else the lowest CLK output that is on, a 0–3.3 V square with
+~2 ns edges — replaces GEN OUT 1 on the bench (`sim/wiring.ts`):
+
+```
+board output ──┬──────────────────────── CH1
+             └── 2nd-order low-pass ── CH2
+```
+
+Test options: no Si5351, a different UART speed, dropped replies, an old
+protocol version, a DAC held by another owner (Busy), what the DAC plays at
+power-up. Not modelled: PLL sharing between the three outputs (no
+output is ever "unreachable"), relock glitches, the crystal's own error.
+
 ## Modelled
 
 - Every command in `core/src/registry/controls.ts` as a stored value: set,

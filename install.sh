@@ -35,9 +35,29 @@ rsync -a --delete \
   --exclude '.git' --exclude 'node_modules' --exclude 'test-results' --exclude 'playwright-report' \
   --exclude 'ui/tests/screenshots' --exclude '.DS_Store' --exclude 'packaging' --exclude '.github' \
   "$SRC/" "$DEST/"
-# 4a. The server's one dependency, optional: `usb` (USB-TMC; prebuilt native binary per platform).
-#     If it cannot be installed, the app still runs and says USB is unavailable.
-( cd "$DEST/server" && "$NPM" install --omit=dev --silent ) || echo "note: USB support could not be installed; LAN and the simulator still work"
+# 3b. What was installed, for the in-app updater (server/update.ts): the branch and commit, from
+#     git when this is a checkout, from the updater when it downloaded the commit itself.
+BRANCH="${MHO_STUDIO_UPDATE_BRANCH:-}"
+COMMIT="${MHO_STUDIO_UPDATE_COMMIT:-}"
+DIRTY=false
+FROM=update
+if [ -z "$COMMIT" ]; then
+  FROM=folder
+  if git -C "$SRC" rev-parse HEAD >/dev/null 2>&1; then
+    FROM=git
+    BRANCH="$(git -C "$SRC" rev-parse --abbrev-ref HEAD)"
+    COMMIT="$(git -C "$SRC" rev-parse HEAD)"
+    if [ -n "$(git -C "$SRC" status --porcelain)" ]; then DIRTY=true; fi
+  fi
+fi
+cat > "$DEST/build.json" <<BUILD
+{ "branch": "$BRANCH", "commit": "$COMMIT", "dirty": $DIRTY, "from": "$FROM", "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)" }
+BUILD
+
+# 4a. The server's two dependencies, both optional, both prebuilt native binaries per platform:
+#     `usb` (USB-TMC to the scope) and `serialport` (the STM32 board's Si5351 for Bode sweeps).
+#     If they cannot be installed, the app still runs and says which part is unavailable.
+( cd "$DEST/server" && "$NPM" install --omit=dev --silent ) || echo "note: USB and serial support could not be installed; LAN and the simulators still work"
 
 # 4. The .command — the shortcut that always works.
 CMD="$SHORTCUTS/$APP_NAME.command"

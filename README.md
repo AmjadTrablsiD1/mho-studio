@@ -4,7 +4,8 @@ Remote bench for the **RIGOL MHO984** oscilloscope (800 MHz, 4 GSa/s, 12-bit,
 4 analog + 16 digital channels, optional 2-channel generator): a live scope on
 your computer, every setting of the instrument, and the analysis its own screen
 cannot do — deep-memory capture, FFT with THD, a Bode sweep with the built-in
-generator, bus tables, presets, a SCPI console.
+generator or with the Si5351 or the DAC on an STM32H743 board, bus tables,
+presets, a SCPI console.
 
 Also drives **Teledyne LeCroy X-Stream oscilloscopes** — the Windows-based
 WaveRunner, WavePro, WaveMaster, SDA, DDA and LabMaster families — over VICP on
@@ -39,6 +40,27 @@ NI drivers. Comes with a **simulated MHO984**, a **simulated LeCroy** and a
 Then double-click **MHO Studio** in App Launcher, or `~/Desktop/Apps/MHO Studio.app`
 (or the `.command` next to it). It opens in your browser; a second double-click
 brings back the running one. Needs Node 22.18 or newer.
+
+**Updating.** The **⤓ Updates** button (top right; a gold dot when there is
+something new) compares this copy with a branch of
+[github.com/AmjadTrablsiD1/mho-studio](https://github.com/AmjadTrablsiD1/mho-studio)
+— by default the branch it was installed from — and lists the commits it does
+not have. **Update** downloads that commit, checks it is MHO Studio, runs the
+installer on it (it needs internet for npm, a minute or two), and opens the new
+version in a new window. Settings, presets and measurements are kept. It never
+offers an older version: a copy installed from local changes that are not
+pushed yet says so instead. Whatever you want on the other machines has to be
+pushed to GitHub first. A copy started from its source folder is updated with
+`git pull` + the installer; the single-file `.exe` is replaced, not updated.
+At start-up the app looks (only reads) once a day; that can be switched off in
+the dialog.
+
+**Closing it ends the connection.** About 20 s after the last MHO Studio window
+closes, the app disconnects the oscilloscope (and the STM32 board) and stops —
+nothing stays connected in the background. A reload, or a laptop waking up,
+brings the window back in time and nothing is lost; a Bode sweep or edge
+capture still running is finished first. **⏻ Quit** (top right) does the same
+at once. The tile starts it again and reconnects to the last instrument.
 
 ### Windows 10 / 11
 
@@ -202,6 +224,59 @@ transfer after each block; `A?;B?` answers only `A`; the descriptor's time
 origin is not filled in, so volts and times come from V/div, offset, time/div,
 delay and sample rate.
 
+## Bode with the STM32 board
+
+Two outputs of the STM32H743 CORE V1.3 board can drive the Bode sweep instead
+of GEN OUT. No reflash: the firmware's command link (protocol v16 or newer)
+already sets both.
+
+| | Si5351 (Board CLK0–2) | DAC (Board DAC PC4) |
+|---|---|---|
+| Where | the module on I²C2: P1 pins 12 SCL, 13 SDA, 3.3 V on pin 1 (`STM32H743/SI5351.md`) | **PC4** on P1: DAC1 channel 1 through OPAMP1, buffered (PA5 carries the same sine unbuffered) |
+| Range | 2.5 kHz – 200 MHz | 1 Hz – 60 kHz |
+| Waveform | 0–3.3 V square | sine on 1.65 V, amplitude set in the sweep (≤ 3 Vpp) |
+| Frequency | 0.01 Hz steps, a fraction of a hertz from the request | timer rate ÷ table length — often a few hertz from the request |
+
+Use the DAC for audio, control loops and anything below 2.5 kHz or that must
+see a sine; the Si5351 for the higher decades. Both report the frequency they
+actually produce, and the sweep plots that.
+
+1. Plug the board's **COM** port (the CH340) into this computer. Close Board
+   Test GUI and Loop Bench — the port can have only one owner.
+2. **Bode sweep** → Generator **Board CLK0** (or 1, 2) or **Board DAC PC4** →
+   **Connect to the board**. The card shows the firmware, the three Si5351
+   outputs and what the DAC plays; **Detect** probes the Si5351 (choose the
+   crystal and load capacitance it has).
+3. Wire CLKx or PC4 to the circuit's input and, with a tee, to CH1; the
+   circuit's output to CH2; common ground.
+4. **Run sweep**. Each point is plotted at the frequency the board reports it
+   produced. Afterwards a CLK output is put back as it was (frequency, on/off,
+   drive); the DAC is stopped (if it was playing something before, the result
+   says what — DacStatus does not report its levels, so it is not restarted).
+   The port stays open until **Disconnect**.
+
+The DAC cannot be used while a Loop Bench control-loop run or the board's own
+sweep holds it (the board answers Busy, and the app says so). Each frequency
+change restarts its table, a short glitch the settle time covers.
+
+What the Si5351 means for the result:
+
+- **2.5 kHz – 200 MHz.** Below that, use GEN OUT.
+- **A 0–3.3 V square, not a sine.** Gain and phase come from the fundamental
+  on both channels, so the harmonics and the DC level drop out — for a linear
+  circuit. An amplifier near clipping, or a filter with a sharp peak at 3f,
+  responds to the harmonics too; use a sine source for those.
+- **Fixed amplitude.** For a small-signal circuit put a divider (e.g. 10:1)
+  after CLKx and take CH1 after the divider. The channels are AC-coupled for
+  this source.
+- **The input channel is checked.** If CH1 does not show the generator's
+  frequency at the first point, the sweep stops and says so (a channel wired to
+  nothing still yields a plausible "gain").
+
+The simulated board (Bode → Board → *Simulated board*, or `--sim-board`) puts
+its DAC sine when one plays, else its lowest CLK output that is on, onto the
+simulated bench in place of GEN OUT 1.
+
 ## What it does
 
 - **Scope** — live traces of CH1–4 and math; drag the channel markers (offset),
@@ -222,8 +297,11 @@ delay and sample rate.
 - **Spectrum** — windowed FFT (Hann, Blackman-Harris, flat top, rectangular) in
   dBV RMS, averaging, peak list, THD with harmonics — from the live screen or
   from deep memory.
-- **Bode sweep** — gain and phase of your circuit using GEN OUT, with
-  auto-ranging, −3 dB corner, CSV export. Your settings are restored afterwards.
+- **Bode sweep** — gain and phase of your circuit, with auto-ranging, −3 dB
+  corner, CSV export. Your settings are restored afterwards. The generator is
+  the scope's **GEN OUT** (AFG option), a **Si5351 output on the STM32H743
+  board** (CORE V1.3, the module on I²C2), or the **board's DAC sine** on PC4,
+  set over the board's serial link — see *Bode with the STM32 board* below.
 - **Deep memory** — stops the scope and reads up to 25 Mpts per channel;
   zoom through it, measure a range, export CSV.
 - **Edge capture** — for an event that happens **once** (an SPI transfer, a
@@ -299,8 +377,10 @@ cd ui && npx playwright test # 19 UI flows × 2 themes (35 runs, 3 skipped by de
   command that transfers their data. They are configured here and appear in the
   instrument screenshot.
 - **The instrument's own Bode option** cannot return its curve over SCPI; the
-  app's own sweep replaces it (needs the AFG50/AFG100 option, as the built-in
-  one does).
+  app's own sweep replaces it (with GEN OUT it needs the AFG50/AFG100 option,
+  as the built-in one does; the STM32 board's Si5351 needs no option).
+- **Bode with the STM32 board (Si5351 and DAC) has run on the simulators only** (0.5.0). The
+  real board, its Si5351 and a known RC are the next step (TODO → Next).
 - **USB has run on a real MHO984 on macOS** (1ab1:0452, fw 00.01.00); not yet on
   Windows or Linux drivers. About 4 screens/s with one channel over USB: the
   instrument takes 25–35 ms per query.

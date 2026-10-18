@@ -36,8 +36,16 @@ export class ScpiClient {
   private reader = new ReplyReader();
   private waiter: { resolve: (r: Reply) => void; reject: (e: Error) => void; timer: NodeJS.Timeout } | null = null;
   private chain: Promise<unknown> = Promise.resolve();
-  /** Set inside an exclusive section, so nested calls from that section run directly. */
-  private inside = new AsyncLocalStorage<boolean>();
+  /**
+   * Which exclusive section a piece of code belongs to, so nested calls from it run directly.
+   * Node carries this into every timer and callback started inside the section — a USB backstop
+   * timer, the reconnect it triggers, the live loop that reconnect starts — long after the section
+   * ended. So it counts only while that same section still holds the line (`holder`); anything
+   * else queues. A plain "inside" flag let a whole reconnected live loop skip the queue, its queries
+   * interleaved with other reads and every reply shifted by one (MHO984, 2026-10-17).
+   */
+  private inside = new AsyncLocalStorage<object>();
+  private holder: object | null = null;
   host = "";
   port = 0;
   lastRttMs: number | null = null;
@@ -117,7 +125,8 @@ export class ScpiClient {
       c.removeAllListeners("data");
       c.removeAllListeners("reply");
       c.destroy();
-      if (why !== "reopen" && why !== "closed") this.onClose?.(why);
+      // The reconnect this starts belongs to no section, whichever one noticed the loss.
+      if (why !== "reopen" && why !== "closed") this.inside.exit(() => this.onClose?.(why));
     }
   }
 
@@ -147,8 +156,17 @@ export class ScpiClient {
 
   /** Run `fn` with the line to ourselves. Nested calls from inside `fn` run directly. */
   exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.inside.getStore()) return fn();
-    const run = () => this.inside.run(true, fn);
+    const mine = this.inside.getStore();
+    if (mine && mine === this.holder) return fn();
+    const run = async () => {
+      const id = {};
+      this.holder = id;
+      try {
+        return await this.inside.run(id, fn);
+      } finally {
+        if (this.holder === id) this.holder = null;
+      }
+    };
     const p = this.chain.then(run, run);
     this.chain = p.catch(() => undefined);
     return p;

@@ -64,6 +64,38 @@ export function corner(points: BodePoint[], dropDb = 3): { hz: number; phaseDeg:
   return null;
 }
 
+/**
+ * The repetition rate of a record from its rising crossings of the mid level,
+ * with 10 % hysteresis so noise does not count. Null with fewer than two crossings.
+ * Used to check that the input channel shows the generator at all — a
+ * plausible gain and phase can be computed from a channel wired to nothing.
+ */
+export function cycleHz(v: ArrayLike<number>, dt: number): number | null {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < v.length; i++) {
+    if (v[i] < lo) lo = v[i];
+    if (v[i] > hi) hi = v[i];
+  }
+  const mid = (lo + hi) / 2;
+  const h = 0.1 * (hi - lo);
+  if (!(h > 0)) return null;
+  let armed = false;
+  let first = -1;
+  let last = -1;
+  let n = 0;
+  for (let i = 0; i < v.length; i++) {
+    if (v[i] < mid - h) armed = true;
+    else if (armed && v[i] > mid + h) {
+      armed = false;
+      if (first < 0) first = i;
+      last = i;
+      n++;
+    }
+  }
+  return n >= 2 && last > first ? (n - 1) / ((last - first) * dt) : null;
+}
+
 /** Timebase (s/div) that shows `periods` cycles of f across `divisions`. */
 export function timebaseFor(hz: number, periods: number, divisions: number): number {
   return periods / hz / divisions;

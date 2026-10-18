@@ -35,3 +35,6 @@ packaging/build/
 packaging/out/
 packaging/cache/
 Oscilloscope_GUI/
+
+# --- written by the installers into the installed copy (the in-app updater reads it) ---
+build.json

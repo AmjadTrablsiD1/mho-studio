@@ -71,6 +71,44 @@ export function subnets(): { iface: string; address: string; base: string }[] {
   return out;
 }
 
+type Ifaces = ReturnType<typeof networkInterfaces>;
+const ipInt = (ip: string) => ip.split(".").reduce((n, b) => (n * 256 + Number(b)) >>> 0, 0);
+
+/**
+ * Why a LAN address cannot be reached, when the cause is on this computer: it has no address
+ * in the scope's network. The usual case is a direct cable — no router hands out addresses, so
+ * the adapter gives itself a 169.254.x.x one while the scope keeps its own static address
+ * (seen 2026-10-14 and 2026-10-17). Null when an interface already shares the network.
+ */
+export function networkHint(host: string, ifaces: Ifaces = networkInterfaces()): string | null {
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return null;
+  const ip = ipInt(host);
+  const selfAssigned: string[] = [];
+  let linkLocalPeers = 0;
+  for (const [name, list] of Object.entries(ifaces)) {
+    for (const a of list ?? []) {
+      if (a.family !== "IPv4" || a.internal) continue;
+      const same = ((ipInt(a.address) ^ ip) & ipInt(a.netmask)) === 0;
+      if (a.address.startsWith("169.254.")) {
+        selfAssigned.push(`${name} (${a.address})`);
+        if (same) linkLocalPeers++;
+        continue;
+      }
+      if (same) return null;
+    }
+  }
+  const manual = (base: string) =>
+    `give the cable adapter a fixed address in the scope's network — macOS: System Settings → Network → the Ethernet / USB-C LAN adapter → Details → TCP/IP → Configure IPv4: Manually, IP address ${base}, subnet mask 255.255.255.0, router empty; Windows: Settings → Network → Ethernet → IP assignment → Edit → Manual.`;
+  const parts = host.split(".").map(Number);
+  if (host.startsWith("169.254.")) {
+    if (!linkLocalPeers) return `${host} is a self-assigned address, but no adapter of this computer has one: ${manual("169.254.10.1 (mask 255.255.0.0)")}`;
+    // Both sides self-assigned: it can work, but macOS sends 169.254 traffic out of the main service (often Wi-Fi).
+    return `Both ends have self-assigned addresses, which macOS may route out of Wi-Fi instead of the cable. Switch Wi-Fi off and try again, or set fixed addresses on both: on the scope 192.168.10.2 / 255.255.255.0, and ${manual("192.168.10.1")}`;
+  }
+  const mine = `${parts[0]}.${parts[1]}.${parts[2]}.${parts[3] === 10 ? 11 : 10}`;
+  return `This computer has no address in ${parts.slice(0, 3).join(".")}.x, so it cannot reach ${host}.${selfAssigned.length ? ` Its adapter ${selfAssigned.join(", ")} gave itself a 169.254 address: nothing on that cable hands out addresses (a direct cable has no router).` : ""} Fix: ${manual(mine)} Then connect to ${host} again.`;
+}
+
 // ------------------------------------------------------------------ mDNS
 
 /** A DNS query (id 0, no flags) with one PTR question per service name. */

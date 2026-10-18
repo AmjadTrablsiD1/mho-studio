@@ -3,7 +3,7 @@
   "app": {
     "id": "mho-studio",
     "name": "MHO Studio",
-    "version": "0.4.6",
+    "version": "0.5.2",
     "icon": "📈",
     "tagline": "Remote bench for RIGOL MHO900 and Teledyne LeCroy X-Stream scopes"
   },
@@ -14,7 +14,21 @@
     "token_header": "x-mho-studio",
     "shutdown_grace_ms": 4000,
     "max_body_bytes": 4194304,
-    "no_viewer_stop_s": 20
+    "no_viewer_stop_s": 20,
+    "_comment_no_viewer": "no_viewer_stop_s: after the last window closes (and no reload brings one back), disconnect the scope and the board and stop the server; a running sweep or capture is waited for. job_stop_wait_ms: how long quitting waits for a stopped job to put the settings back.",
+    "job_stop_wait_ms": 15000
+  },
+  "update": {
+    "_comment": "The in-app updater (server/update.ts): compares the installed commit (build.json, written by the installers) with a branch of this GitHub repo, downloads that exact commit and runs the platform's installer on it. MHO_STUDIO_UPDATE_API / _RAW / _CODELOAD replace the hosts in tests.",
+    "repo": "AmjadTrablsiD1/mho-studio",
+    "branch": "lecroy-and-windows",
+    "api": "https://api.github.com",
+    "raw": "https://raw.githubusercontent.com",
+    "codeload": "https://codeload.github.com",
+    "check_hours": 24,
+    "timeout_ms": 20000,
+    "max_bytes": 104857600,
+    "list_commits": 20
   },
   "paths": {
     "config_dir": "~/.config/mho-studio",
@@ -190,7 +204,29 @@
     "fill_divisions": 5,
     "max_retries": 3,
     "min_hz": 0.01,
-    "max_hz": 100000000
+    "max_hz": 100000000,
+    "board_start_hz": 5000,
+    "wiring_tolerance": 0.1
+  },
+  "board": {
+    "_comment": "The STM32H743 board (CORE V1.3) as a Bode generator: its Si5351 on I2C2, set over the board's command link on USART1 (CH340). server/board.ts; packets in core/src/board/protocol.ts. Board Test GUI must not have the port open at the same time.",
+    "baud": 115200,
+    "bauds": [115200, 230400, 460800, 921600],
+    "probe_timeout_ms": 600,
+    "command_timeout_ms": 1500,
+    "min_protocol": 16,
+    "usb_ids": [{ "vendor": "1a86", "product": "7523", "name": "CH340" }, { "vendor": "1a86", "product": "55d4", "name": "CH9102" }],
+    "log_lines": 40,
+    "si5351": { "channels": 3, "min_hz": 2500, "max_hz": 200000000, "xtal_hz": 25000000, "xtals_hz": [25000000, 27000000], "load": 2, "address": 96, "vpp": 3.3, "drive": 3 },
+    "dac": { "_comment": "DAC1 sine (DacSine): both channels, PC4 through OPAMP1 (buffered — use this one) and PA5 direct; both on header P1. Table length and timer rate are chosen together, so the reply carries the frequency produced.", "min_hz": 1, "max_hz": 60000, "max_vpp": 3.0, "offset_v": 1.65, "pin": "PC4", "target_fs": 400000, "min_len": 16, "max_len": 1024, "timer_hz": 240000000 },
+    "sim": {
+      "_comment": "The simulated board: its DAC sine when one is playing, else its lowest CLK output that is on, replaces GEN OUT 1 on the simulated bench, so it feeds CH1 and, through the filter, CH2.",
+      "latency_ms": 3,
+      "protocol": 22,
+      "firmware": 2,
+      "built": [16, 10, 2026],
+      "rise_s": 2e-9
+    }
   },
   "sim": {
     "_comment": "The simulated bench behind 'Simulated MHO984'. Everything it does is listed in sim/README.md; nothing in the app treats it differently from a real scope.",

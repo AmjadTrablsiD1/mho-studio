@@ -182,6 +182,80 @@ test("spectrum: the generator's 5 kHz tone is the top peak", async ({ page }, in
   await page.screenshot({ path: `${shots}spectrum-${theme}.png` });
 });
 
+test("quit asks first; cancelled, the app keeps running and stays connected", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  test.skip(theme !== "midnight", "behaviour, not styling");
+  await open(page, theme);
+  await page.getByTestId("quit").click();
+  await expect(page.getByText(/Quit MHO Studio\? The oscilloscope is disconnected and the app stops/)).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByTestId("app-stopped")).toHaveCount(0);
+  await expect(page.getByTestId("link-pill")).toContainText("MHO984");
+  // (Confirming is tested on a server of its own: server/test/lifetime.test.ts — this suite's server must keep running.)
+});
+
+test("updates: the dialog says what is installed; a copy run from its source folder is updated with git, not in place", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  await open(page, theme);
+  await page.getByTestId("updates").click();
+  await expect(page.getByTestId("update-dialog")).toBeVisible();
+  await expect(page.getByTestId("update-installed")).toContainText(/^\d+\.\d+\.\d+/);
+  await expect(page.getByTestId("update-not-installed")).toContainText("git pull");
+  await expect(page.getByTestId("update-install")).toHaveCount(0);
+  await axe(page, `updates (${theme})`);
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(page.getByTestId("update-dialog")).toHaveCount(0);
+});
+
+test("spectrum: on a narrow window the span fields stay in view; a stop above the record's reach raises it, out of ROLL too", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  test.skip(theme !== "midnight", "behaviour, not styling");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await open(page, theme, "spectrum");
+  // Every toolbar control inside the toolbar, none under the inspector.
+  const fits = await page.evaluate(() => {
+    const tb = document.querySelector(".toolbar")!.getBoundingClientRect();
+    return ["span-start", "span-stop", "span-full"].map((id) => {
+      const r = document.querySelector(`[data-test=${id}]`)!.getBoundingClientRect();
+      return r.left >= tb.left && r.right <= tb.right && r.bottom <= tb.bottom;
+    });
+  });
+  expect(fits).toEqual([true, true, true]);
+  // The scope in ROLL at a slow time/div: the record reaches ~1 kHz, and the view says why.
+  await api(page, "control", { key: "timebase.scale", value: 0.05 });
+  await api(page, "control", { key: "timebase.mode", value: "ROLL" });
+  await expect(page.getByTestId("spectrum-roll")).toBeVisible({ timeout: 10_000 });
+  // The live bandwidths are offered up to what the converters can do, not what ROLL samples at today.
+  await expect(page.locator("[data-test=spectrum-livebw] option[value='1000000']")).toBeEnabled();
+  await page.getByTestId("span-stop").fill("2M");
+  await page.getByTestId("span-stop").press("Enter");
+  await expect(page.getByTestId("spectrum-nyquist")).toHaveText(/^(2|2\.5|5) MHz$/, { timeout: 15_000 });
+  await expect(page.getByTestId("spectrum-roll")).toHaveCount(0);
+  await expect(page.getByTestId("spectrum-shown")).toContainText("2 MHz");
+  await expect(page.getByTestId("spectrum-beyond")).toHaveCount(0);
+});
+
+test("spectrum full rate: memory 10k at 20 ms/div reaches 25 kHz; asking for 1 MHz raises the memory and captures again", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  test.skip(theme !== "midnight", "behaviour, not styling");
+  await open(page, theme, "spectrum");
+  // His MHO984 on 2026-10-17: one channel, 10k points, 20 ms/div → 50 kSa/s.
+  await api(page, "control", { key: "channel.display@2", value: false });
+  await api(page, "control", { key: "acquire.mdepth", value: "10k" });
+  await api(page, "control", { key: "timebase.scale", value: 0.02 });
+  await page.getByTestId("spectrum-full").click();
+  await page.getByTestId("spectrum-capture").click();
+  await expect(page.getByTestId("spectrum-nyquist")).toHaveText("25 kHz", { timeout: 30_000 });
+  await expect(page.getByTestId("spectrum-more-memory")).toContainText("Memory 10k →");
+  await page.getByTestId("span-stop").fill("1M");
+  await page.getByTestId("span-stop").press("Enter");
+  await expect(page.getByTestId("spectrum-nyquist")).toHaveText(/^([1-9]\d*(\.\d+)?) MHz$/, { timeout: 30_000 });
+  const reach = await page.getByTestId("spectrum-nyquist").textContent();
+  expect(parseFloat(reach!)).toBeGreaterThanOrEqual(1);
+  await expect(page.getByTestId("spectrum-shown")).toContainText("1 MHz");
+  await expect(page.getByTestId("spectrum-beyond")).toHaveCount(0);
+});
+
 test("spectrum bandwidth: a span typed or chosen, the live bandwidth raised, and a full-rate capture reaching half the sample rate", async ({ page }, info) => {
   const theme = info.project.metadata.theme as string;
   await open(page, theme, "spectrum");
@@ -244,6 +318,57 @@ test("bode: a sweep of the simulated filter finds its 20 kHz corner", async ({ p
   await expect(page.getByTestId("bode-corner")).toContainText(/(1[89]|2[01])(\.\d+)?kHz|(1[89]|2[01])(\.\d+)?\s*kHz/, { timeout: 90_000 });
   await expect(page.getByTestId("bode-start")).toBeVisible({ timeout: 30_000 });
   await page.screenshot({ path: `${shots}bode-${theme}.png` });
+});
+
+test("bode: the STM32 board's Si5351 drives the sweep — connect the simulated board, same corner, board put back", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  await open(page, theme, "bode");
+  await page.getByTestId("bode-source").selectOption("clk0");
+  // Start moved up to the Si5351's range; the run waits for the board.
+  await expect(page.locator("#b-startHz")).toHaveValue("5000");
+  await expect(page.getByTestId("bode-board-needed")).toBeVisible();
+  await expect(page.getByTestId("bode-start")).toBeDisabled();
+  await expect(page.getByTestId("board-port")).toContainText("Simulated board");
+  await page.getByTestId("board-port").selectOption("sim");
+  await page.getByTestId("board-connect").click();
+  await expect(page.getByTestId("board-status")).toContainText("Simulated board");
+  await expect(page.getByTestId("board-clk0")).toContainText("off");
+  await axe(page, `bode with board (${theme})`);
+  if (theme === "midnight") {
+    await page.locator("#b-startHz").fill("2.5k");
+    await page.locator("#b-stopHz").fill("200k");
+    await page.locator("#b-points").fill("12");
+    await page.getByTestId("bode-start").click();
+    await expect(page.getByTestId("board-disconnect")).toBeDisabled(); // the sweep holds the board
+    await expect(page.getByTestId("bode-corner")).toContainText(/(1[89]|2[01])(\.\d+)?\s*kHz/, { timeout: 90_000 });
+    await expect(page.getByTestId("bode-start")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("bode-generator")).toContainText("STM32 board CLK0");
+    await expect(page.getByTestId("board-clk0")).toContainText("off");
+    await page.screenshot({ path: `${shots}bode-board-${theme}.png` });
+  }
+  await page.getByTestId("board-disconnect").click();
+  await expect(page.getByTestId("board-connect")).toBeVisible();
+});
+
+test("bode: the board's DAC sine drives the sweep — band moved into its range, same corner, DAC idle afterwards", async ({ page }, info) => {
+  const theme = info.project.metadata.theme as string;
+  test.skip(theme !== "midnight", "the board card is checked in both themes above");
+  await open(page, theme, "bode");
+  await page.locator("#b-stopHz").fill("1M");
+  await page.getByTestId("bode-source").selectOption("dac");
+  await expect(page.locator("#b-stopHz")).toHaveValue("60000"); // the DAC stops at 60 kHz
+  await page.getByTestId("board-port").selectOption("sim");
+  await page.getByTestId("board-connect").click();
+  await expect(page.getByTestId("board-dac")).toContainText("idle");
+  await page.locator("#b-startHz").fill("1k");
+  await page.locator("#b-points").fill("10");
+  await page.getByTestId("bode-start").click();
+  await expect(page.getByTestId("bode-corner")).toContainText(/(1[89]|2[01])(\.\d+)?\s*kHz/, { timeout: 90_000 });
+  await expect(page.getByTestId("bode-start")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("bode-generator")).toContainText("DAC (PC4, 1 Vpp sine)");
+  await expect(page.getByTestId("board-dac")).toContainText("idle");
+  await page.screenshot({ path: `${shots}bode-dac-${theme}.png` });
+  await page.getByTestId("board-disconnect").click();
 });
 
 test("deep memory: stop, read memory in chunks, zoomable envelope", async ({ page }, info) => {

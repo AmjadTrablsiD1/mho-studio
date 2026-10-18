@@ -119,9 +119,12 @@ button.pill:hover { border-color: var(--active-line); color: var(--text); }
 
 /* -------------------------------------------------------------- workspace */
 
-.workspace { display: grid; grid-template-rows: 44px minmax(0, 1fr) 200px; min-width: 0; min-height: 0; background: var(--bg); }
-.workspace.single { grid-template-rows: 44px minmax(0, 1fr); }
-.toolbar { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-width: 0; border-bottom: 1px solid var(--line); background: var(--surface); }
+.workspace { display: grid; grid-template-rows: minmax(44px, auto) minmax(0, 1fr) 200px; min-width: 0; min-height: 0; background: var(--bg); }
+.workspace.single { grid-template-rows: minmax(44px, auto) minmax(0, 1fr); }
+.toolbar { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-width: 0; min-height: 44px; border-bottom: 1px solid var(--line); background: var(--surface); }
+/* A toolbar with more controls than a narrow window has room for: a second line, never controls hidden under the inspector. */
+.toolbar.wraps { flex-wrap: wrap; row-gap: 6px; padding-top: 7px; padding-bottom: 7px; }
+.toolbar.wraps > * { flex-shrink: 0; }
 .toolbar h1 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: -.2px; white-space: nowrap; }
 .toolbar .hint { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .segmented { display: flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; background: var(--surface2); flex-shrink: 0; }

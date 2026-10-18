@@ -42,6 +42,9 @@ export const Icon = {
   panel: () => (
     <svg viewBox="0 0 16 16" {...P}><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M10 2.5v11" /></svg>
   ),
+  power: () => (
+    <svg viewBox="0 0 16 16" {...P}><path d="M8 1.5v6" /><path d="M4.5 4a5 5 0 1 0 7 0" /></svg>
+  ),
   x: () => (
     <svg viewBox="0 0 16 16" {...P}><path d="M4 4l8 8M12 4l-8 8" /></svg>
   ),

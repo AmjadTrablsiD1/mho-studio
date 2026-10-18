@@ -15,7 +15,8 @@ import { formatPreamble, type Preamble } from "../core/src/wave/decode.ts";
 import { offsetLimit, scaleLimits, snap125, channelMode } from "../core/src/wave/steps.ts";
 import { measureAll, delay, Stats } from "../core/src/dsp/measure.ts";
 import { spectrum, dbv } from "../core/src/dsp/spectrum.ts";
-import { awgSource, clockSource, gauss, sampleSource, throughDut, uartFrames, uartSource, type Awg, type Source } from "./bench.ts";
+import { awgSource, clockSource, gauss, sampleSource, squareSource, throughDut, uartFrames, uartSource, type Awg, type Source } from "./bench.ts";
+import { wiring } from "./wiring.ts";
 import { Raster, hex } from "./png.ts";
 import themes from "../shared/themes.json" with { type: "json" };
 
@@ -101,7 +102,8 @@ export class SimScope {
 
   /** The bench's sources, rebuilt only after a generator setting changes (see write()). */
   private sources(): Source[] {
-    if (this.srcCache) return this.srcCache.ch;
+    // A simulated board's clock output, when one is on, is wired where GEN OUT 1 was (sim/wiring.ts).
+    if (this.srcCache && this.srcCache.key === String(wiring.gen)) return this.srcCache.ch;
     const awg = (n: number): Awg => ({
       on: this.on(key("source.output.state", n)),
       fn: String(this.g(key("source.function", n))),
@@ -111,8 +113,13 @@ export class SimScope {
       duty: this.num(key("source.function.square.duty", n)) || 50,
       symmetry: this.num(key("source.function.ramp.symmetry", n)) || 50,
     });
-    const a = awgSource(awg(1));
-    this.srcCache = { key: "", ch: [a, throughDut(a), this.clock, this.uart] };
+    const b = wiring.board;
+    const a = !b
+      ? awgSource(awg(1))
+      : b.kind === "clk"
+        ? squareSource(b.hz, b.vpp, b.riseS)
+        : awgSource({ on: true, fn: "SINusoid", freq: b.hz, amp: 2 * b.ampV, offset: b.offsetV, duty: 50, symmetry: 50 });
+    this.srcCache = { key: String(wiring.gen), ch: [a, throughDut(a), this.clock, this.uart] };
     return this.srcCache.ch;
   }
 

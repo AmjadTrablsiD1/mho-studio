@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { C } from "../../core/src/constants.ts";
 import { key } from "../../core/src/registry/controls.ts";
 import { fmt } from "../../core/src/format.ts";
-import { action, attempt, dismissToast, getLive, linkAddress, setConfirmer, useLive, useToasts, writeControl } from "./api.ts";
+import { action, attempt, dismissToast, getLive, linkAddress, onQuit, quitApp, setConfirmer, useLive, useToasts, writeControl } from "./api.ts";
 import { getUi, setUi, useUi, type View } from "./uistate.ts";
 import { applyTheme, currentTheme } from "./theme.ts";
 import { Icon } from "./components/Icons.tsx";
@@ -15,6 +15,7 @@ import { ScreenshotModal } from "./components/Screenshot.tsx";
 import { ScopeView } from "./views/ScopeView.tsx";
 import { SpectrumView } from "./views/SpectrumView.tsx";
 import { BodeView } from "./views/BodeView.tsx";
+import { UpdateDialog } from "./components/UpdateDialog.tsx";
 import { DeepView } from "./views/DeepView.tsx";
 import { DecodeView } from "./views/DecodeView.tsx";
 import { ConsoleView } from "./views/ConsoleView.tsx";
@@ -45,6 +46,9 @@ export function App() {
   const [confirmMsg, setConfirmMsg] = useState<{ text: string; resolve: (ok: boolean) => void } | null>(null);
   const [showLink, setShowLink] = useState(false);
   const [shot, setShot] = useState(false);
+  const [stopped, setStopped] = useState(false);
+  const [updates, setUpdates] = useState(false);
+  useEffect(() => onQuit(() => setStopped(true)), []);
 
   useEffect(() => {
     setConfirmer((text) => new Promise((resolve) => setConfirmMsg({ text, resolve })));
@@ -79,9 +83,19 @@ export function App() {
   }, []);
 
   const wantsInspector = inspector && connected && (view === "scope" || view === "spectrum");
+  if (stopped) {
+    return (
+      <div className="pane" data-test="app-stopped" style={{ height: "100vh" }}>
+        <div className="empty">
+          <h3>MHO Studio has stopped</h3>
+          <p>The oscilloscope is disconnected. You can close this window; the MHO Studio tile starts it again.</p>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={`app${wantsInspector ? "" : " no-inspector"}`}>
-      <Header onLink={() => setShowLink(true)} onShot={() => setShot(true)} />
+      <Header onLink={() => setShowLink(true)} onShot={() => setShot(true)} onUpdates={() => setUpdates(true)} />
       <Rail />
       <main className="workspace single" style={{ gridColumn: wantsInspector ? undefined : "2 / span 2" }}>
         {!loaded ? (
@@ -109,6 +123,7 @@ export function App() {
       )}
       {showLink && <ConnectionModal onClose={() => setShowLink(false)} />}
       {shot && <ScreenshotModal onClose={() => setShot(false)} />}
+      {updates && <UpdateDialog onClose={() => setUpdates(false)} />}
     </div>
   );
 }
@@ -130,7 +145,8 @@ function ViewHost({ view }: { view: View }) {
   }
 }
 
-function Header({ onLink, onShot }: { onLink: () => void; onShot: () => void }) {
+function Header({ onLink, onShot, onUpdates }: { onLink: () => void; onShot: () => void; onUpdates: () => void }) {
+  const update = useLive((s) => s.update);
   const link = useLive((s) => s.link);
   const status = useLive((s) => s.status);
   const busy = useLive((s) => s.busy);
@@ -193,6 +209,11 @@ function Header({ onLink, onShot }: { onLink: () => void; onShot: () => void }) 
         {theme === "midnight" ? <Icon.sun /> : <Icon.moon />}
       </button>
       <button className={`icon-btn${getUi().inspector ? " on" : ""}`} aria-label="Show or hide the inspector" title="Inspector" onClick={() => setUi((u) => ({ inspector: !u.inspector }))}><Icon.panel /></button>
+      <button className="icon-btn" aria-label={update?.available ? "Updates: a new version is available" : "Updates"} title={update?.available ? `Update available: ${update.latest?.version ?? ""} (${update.newerCount} new commit${update.newerCount > 1 ? "s" : ""})` : "Updates"} data-test="updates" onClick={onUpdates} style={{ position: "relative" }}>
+        <Icon.download />
+        {update?.available && <span data-test="update-dot" style={{ position: "absolute", top: 4, right: 4, width: 7, height: 7, borderRadius: "50%", background: "var(--gold)" }} />}
+      </button>
+      <button className="icon-btn" aria-label="Quit MHO Studio" title="Quit: disconnect the oscilloscope and stop the app (closing the last window does the same after a few seconds)" data-test="quit" onClick={() => void quitApp()}><Icon.power /></button>
     </header>
   );
 }

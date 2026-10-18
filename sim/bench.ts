@@ -66,6 +66,19 @@ export function awgSource(g: Awg): Source {
   return src;
 }
 
+/** A CMOS clock output: 0 to vpp, edges a straight ramp of riseS (the simulated board's Si5351). */
+export function squareSource(hz: number, vpp: number, riseS: number): Source {
+  const r = Math.min(0.2, riseS * hz);
+  const src = tableOf((p) => {
+    if (p < r) return (vpp * p) / r;
+    if (p < 0.5) return vpp;
+    if (p < 0.5 + r) return vpp * (1 - (p - 0.5) / r);
+    return 0;
+  });
+  src.period = 1 / hz;
+  return src;
+}
+
 function ecg(p: number): number {
   const g = (c: number, w: number, a: number) => a * Math.exp(-(((p - c) / w) ** 2));
   return g(0.2, 0.025, 0.15) - g(0.37, 0.01, 0.1) + g(0.4, 0.012, 1) - g(0.43, 0.01, 0.25) + g(0.7, 0.05, 0.3) - 0.2;

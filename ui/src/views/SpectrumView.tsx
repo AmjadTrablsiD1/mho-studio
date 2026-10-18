@@ -16,7 +16,7 @@ import { C } from "../../../core/src/constants.ts";
 import { fmt } from "../../../core/src/format.ts";
 import { dbv, harmonics, peaks, spectrum, type Harmonics, type Peak } from "../../../core/src/dsp/spectrum.ts";
 import { WINDOW_LABELS, type WindowName } from "../../../core/src/dsp/window.ts";
-import { attempt, get, onFrame, post, useLive } from "../api.ts";
+import { attempt, get, onFrame, post, toast, useLive } from "../api.ts";
 import { parseSI } from "../../../core/src/format.ts";
 import { snap125, step125 } from "../../../core/src/wave/steps.ts";
 import { Plot } from "../charts/Plot.tsx";
@@ -28,6 +28,10 @@ type Result = { f0: number; df: number; db: number[]; peaks: Peak[]; harm: Harmo
 type DeepSpectrum = { f0: number; df: number; binDf: number; nyquistHz: number; sampleRate: number; bins: number[]; peaks: Peak[]; harmonics: Harmonics | null; points: number; rbwHz: number };
 /** Lengths a full-rate capture can have: longer is finer resolution (sample rate / points) and a longer read. */
 const CAPTURE_POINTS = [65_536, 262_144, 1_048_576, 4_194_304];
+/** RIGOL memory depths, smallest first: the rate is memory ÷ (divisions × time/div), up to the converters' limit. */
+const MEMORY = ["1k", "10k", "100k", "1M", "10M", "25M", "50M", "100M"];
+/** Sample a little faster than twice the stop frequency: the window's skirt and the top bins need room. */
+const RATE_MARGIN = 2.5;
 /** Live bandwidths offered: the timebase is set so that the screen record reaches them. */
 const LIVE_BW = [1e4, 1e5, 1e6, 1e7, 1e8, 5e8];
 type ScopeFft = { df: number; bins: number[]; peaks: Peak[]; harmonics: Harmonics | null; points: number; rbwHz: number; unit: string };
@@ -105,11 +109,11 @@ export function SpectrumView() {
     if (r) setRes({ f0: r.f0, df: r.df, db: r.bins.map(dbv), peaks: r.peaks, harm: r.harmonics, points: r.points, rbw: r.rbwHz, from: "deep", nyquist: r.nyquistHz, sampleRate: r.sampleRate });
   };
   /** Full rate: read this channel's record from deep memory (the scope runs on afterwards), then analyse it. */
-  const capture = async () => {
+  const capture = async (sp: [number, number] | null = span) => {
     setCapturing(true);
     const ok = await attempt(() => post("deep/capture", { channels: [src], maxPoints: capPoints, resume: true }));
     setCapturing(false);
-    if (ok) await runDeep();
+    if (ok) await runDeep(sp);
   };
   const deepHasSrc = !!deep?.channels.some((c) => c.src === src);
   // A new span on a capture: ask for it at full resolution (after typing or dragging settles).
@@ -128,16 +132,75 @@ export function SpectrumView() {
   // Live bandwidth: the screen record's points over the screen; a faster timebase raises it.
   const tdiv = values["timebase.scale"];
   const srate = values["acquire.srate"];
-  const setLiveBw = (hz: number) => {
+  const roll = family === "rigol" && values["timebase.mode"] === "ROLL";
+  // The most the scope can sample with this many channels on: today's rate is lower at a slow
+  // time/div or in ROLL, and rises with a faster one. Other families: the scope coerces.
+  const rates = C.instrument.max_sample_rate as number[];
+  const topRate = family === "rigol" && sources.length ? rates[Math.min(rates.length, sources.length) - 1] : null;
+  const mdepth = values["acquire.mdepth"];
+  /**
+   * The smallest memory depth with which the scope samples fast enough for `hz` at this time/div
+   * (RIGOL), or null when the memory is not what limits it (already enough, AUTO, or unknown).
+   */
+  const memoryFor = (hz: number): { depth: string; rate: number } | null => {
+    if (family !== "rigol" || typeof tdiv !== "number" || topRate === null) return null;
+    const rate = Math.min(topRate, RATE_MARGIN * hz);
+    const need = rate * divisionsX * tdiv;
+    const have = typeof mdepth === "string" ? parseSI(mdepth) : typeof mdepth === "number" ? mdepth : null;
+    if (have === null || have >= need) return null;
+    const maxMem = (C.instrument.max_memory_pts as number[])[Math.min(4, sources.length || 1) - 1];
+    const fits = MEMORY.filter((m) => (parseSI(m) ?? 0) <= maxMem);
+    const depth = fits.find((m) => (parseSI(m) ?? 0) >= need) ?? fits[fits.length - 1];
+    if ((parseSI(depth) ?? 0) <= have) return null;
+    return { depth, rate: Math.min(topRate, (parseSI(depth) ?? 0) / (divisionsX * tdiv)) };
+  };
+  /** Raise the memory depth so a full-rate capture reaches `hz`, then capture again. */
+  const moreMemory = async (hz: number, sp: [number, number] | null = span) => {
+    const m = memoryFor(hz);
+    if (!m) return false;
+    const ok = await attempt(() => post("control", { key: "acquire.mdepth", value: m.depth }));
+    if (!ok) return false;
+    toast("info", `Memory depth ${String(mdepth)} → ${m.depth}: at ${fmt(tdiv as number, "s", 3)}/div the scope now samples at about ${fmt(m.rate, "Sa/s", 3)}, so a capture reaches ${fmt(m.rate / 2, "Hz", 3)}. Capturing again…`);
+    // A new acquisition at the new depth: two screens, at least half a second.
+    await new Promise((r) => setTimeout(r, Math.max(500, 2 * divisionsX * (tdiv as number) * 1000)));
+    await capture(sp);
+    return true;
+  };
+  /** Set the time/div so the screen record reaches hz (out of ROLL first: it samples too slowly for a spectrum). */
+  const setLiveBw = async (hz: number, keepSpan = false) => {
     let t = snap125(screenPoints / (2 * divisionsX * hz));
     if (t > screenPoints / (2 * divisionsX * hz) * 1.0001) t = step125(t, -1);
-    void attempt(() => post("control", { key: "timebase.scale", value: t }), `Time/div ${fmt(t, "s", 3)}: the screen spectrum now reaches ${fmt(screenPoints / (2 * divisionsX * t), "Hz", 3)}`);
-    setSpan(null);
+    if (roll) await attempt(() => post("control", { key: "timebase.mode", value: "MAIN" }));
+    await attempt(() => post("control", { key: "timebase.scale", value: t }), `Time/div ${fmt(t, "s", 3)}: the screen spectrum now reaches ${fmt(screenPoints / (2 * divisionsX * t), "Hz", 3)}`);
+    if (!keepSpan) setSpan(null);
+  };
+  /**
+   * A span typed or dragged. On the live screen, a stop above what the record reaches raises the
+   * bandwidth to it (a faster time/div) instead of drawing an empty axis; a capture says what it reaches.
+   */
+  const chooseSpan = (sp: [number, number]) => {
+    setSpan(sp);
+    // Before the first spectrum has arrived (ROLL takes a while), the live reach follows from the time/div.
+    const liveReach = typeof tdiv === "number" && tdiv > 0 ? screenPoints / (2 * divisionsX * tdiv) : null;
+    const reach = res?.nyquist ?? (mode === "screen" ? liveReach : null);
+    if (mode === "deep" && !res) return; // nothing captured yet: Capture decides the reach
+    if (reach !== null && sp[1] <= reach * 1.001) return;
+    const top = topRate;
+    const half = top !== null ? top / 2 : null;
+    if (mode === "screen") {
+      if (half !== null && sp[1] > half) toast("info", `With ${sources.length} channel${sources.length > 1 ? "s" : ""} on the scope samples at most ${fmt(top as number, "Sa/s", 3)}: nothing above ${fmt(half, "Hz", 3)} can be in its record. Switch channels off for more — see Bandwidth.`);
+      void setLiveBw(half !== null ? Math.min(sp[1], half) : sp[1], true);
+    } else if (mode === "deep") {
+      // The usual reason a capture stops short is a small memory depth at a slow time/div: fix that and capture again.
+      void moreMemory(sp[1], sp).then((done) => {
+        if (!done && res) toast("info", `This capture reaches ${fmt(res.nyquist, "Hz", 3)} (sampled at ${fmt(res.sampleRate, "Sa/s", 3)})${half !== null && sp[1] > half ? `; with ${sources.length} channel${sources.length > 1 ? "s" : ""} on the scope cannot sample above ${fmt(top as number, "Sa/s", 3)}` : ""}. For ${fmt(sp[1], "Hz", 3)}: fewer channels on, a faster time/div, or more memory.`);
+      });
+    }
   };
   const col = sourceColor(src);
   return (
     <>
-      <div className="toolbar">
+      <div className="toolbar wraps">
         <h1>Spectrum</h1>
         <select className="input" style={{ width: 90, flexShrink: 0 }} aria-label="Source" value={src} onChange={(e) => setSrc(e.target.value)}>
           {(sources.length ? sources : ["CHANnel1"]).map((s) => <option key={s} value={s}>{sourceLabel(s)}</option>)}
@@ -166,7 +229,7 @@ export function SpectrumView() {
           <button className={!logx ? "active" : ""} onClick={() => setLogx(false)}>Lin</button>
           <button className={logx ? "active" : ""} onClick={() => setLogx(true)}>Log</button>
         </div>
-        <SpanFields view={view} onSet={setSpan} reset={() => setSpan(null)} zoomed={span !== null} />
+        <SpanFields view={view} onSet={chooseSpan} reset={() => setSpan(null)} zoomed={span !== null} />
         <span className="grow" />
       </div>
       <div className="pane">
@@ -176,7 +239,7 @@ export function SpectrumView() {
               <Plot
                 title={`${sourceLabel(src)} · ${WINDOW_LABELS[win]} · ${res.from === "deep" ? "deep capture" : res.from === "scope" ? "computed by the scope (F8)" : `${avg}× power average`}`}
                 x={{ min: logx ? Math.max(view[0], res.df, view[1] / 1e4) : view[0], max: view[1], log: logx, unit: "Hz" }}
-                onSelect={(a, b) => setSpan([Math.max(0, Math.min(a, b)), Math.max(a, b)])}
+                onSelect={(a, b) => chooseSpan([Math.max(0, Math.min(a, b)), Math.max(a, b)])}
                 y={{ min: range[0], max: range[1], unit: "dBV" }}
                 series={[{ x: xs.slice(logx && res.f0 === 0 ? 1 : 0), y: res.db.slice(logx && res.f0 === 0 ? 1 : 0), color: col, width: 1.2 }]}
                 markers={res.peaks.slice(0, 3).map((p, i) => ({ x: p.hz, color: i ? token("muted") : col, label: i ? "" : `${fmt(p.hz, "Hz", 4)} ${p.dbv.toFixed(1)} dBV` }))}
@@ -205,12 +268,31 @@ export function SpectrumView() {
                 )}
                 <div className="metric-row"><span>The scope samples at</span><strong>{fmt(typeof srate === "number" ? srate : null, "Sa/s", 3)} → up to {fmt(typeof srate === "number" ? srate / 2 : null, "Hz", 3)}</strong></div>
                 {family === "rigol" && <RateLimit srate={typeof srate === "number" ? srate : null} on={sources.length} />}
+                {(() => {
+                  const m = topRate !== null ? memoryFor(topRate / 2) : null;
+                  return m ? (
+                    <button className="btn small" disabled={capturing || busy !== null} data-test="spectrum-more-memory"
+                      onClick={() => void (mode === "deep" ? moreMemory(topRate! / 2) : attempt(() => post("control", { key: "acquire.mdepth", value: m.depth }), `Memory depth ${m.depth}: the scope samples at about ${fmt(m.rate, "Sa/s", 3)}`))}>
+                      Memory {String(mdepth)} → {m.depth}: sample at {fmt(m.rate, "Sa/s", 3)} (up to {fmt(m.rate / 2, "Hz", 3)})
+                    </button>
+                  ) : null;
+                })()}
+                {roll && (
+                  <p className="body-text" style={{ margin: 0, fontSize: 10.5, color: "var(--gold)" }} data-test="spectrum-roll">
+                    The scope is in <b>ROLL</b> mode: it samples slowly and its record reaches only {fmt(res?.nyquist ?? null, "Hz", 3)}. Choosing a live bandwidth below (or typing a higher stop frequency) switches it back to normal (YT) with a faster time/div.
+                  </p>
+                )}
+                {res && view[1] > res.nyquist * 1.001 && (
+                  <p className="body-text" style={{ margin: 0, fontSize: 10.5, color: "var(--gold)" }} data-test="spectrum-beyond">
+                    The span shown goes to {fmt(view[1], "Hz", 3)}, but this record has nothing above {fmt(res.nyquist, "Hz", 3)}.
+                  </p>
+                )}
                 {mode === "screen" && (
                   <div className="field" style={{ marginTop: 4 }}>
                     <label htmlFor="sp-livebw">Live bandwidth up to</label>
-                    <select id="sp-livebw" className="input" value="" onChange={(e) => e.target.value && setLiveBw(Number(e.target.value))} data-test="spectrum-livebw">
+                    <select id="sp-livebw" className="input" value="" onChange={(e) => e.target.value && void setLiveBw(Number(e.target.value))} data-test="spectrum-livebw">
                       <option value="">{typeof tdiv === "number" ? `now ${fmt(screenPoints / (2 * divisionsX * tdiv), "Hz", 3)} (${fmt(tdiv, "s", 3)}/div)` : "choose…"}</option>
-                      {LIVE_BW.map((f) => <option key={f} value={f} disabled={typeof srate === "number" && f > srate / 2}>{fmt(f, "Hz", 3)}</option>)}
+                      {LIVE_BW.map((f) => <option key={f} value={f} disabled={topRate !== null && f > topRate / 2}>{fmt(f, "Hz", 3)}</option>)}
                     </select>
                     <span className="muted" style={{ fontSize: 10.5 }}>Sets a faster time/div on the scope, so its {screenPoints}-point screen record spans less time and reaches higher. For more, and finer resolution, use <b>Full rate</b>.</span>
                   </div>
@@ -282,11 +364,12 @@ function SpanFields({ view, onSet, reset, zoomed }: { view: [number, number]; on
     if (lo !== null && hi !== null && hi > lo) onSet([Math.max(0, lo), hi]);
   };
   return (
-    <>
+    <div className="row" style={{ gap: 4, flexShrink: 0 }}>
+    <span className="muted" style={{ fontSize: 11 }}>Span</span>
     <form
       ref={form}
       className="row"
-      style={{ gap: 4 }}
+      style={{ gap: 4, flexShrink: 0 }}
       aria-label="Span"
       onSubmit={(e) => (e.preventDefault(), apply())}
       // Applied when focus leaves both fields (or on Enter), not between typing the start and the stop.
@@ -294,14 +377,14 @@ function SpanFields({ view, onSet, reset, zoomed }: { view: [number, number]; on
         if (!form.current?.contains(e.relatedTarget as Node | null)) apply();
       }}
     >
-      <input className="input mono" style={{ width: 92 }} aria-label="Start frequency" value={a} onChange={(e) => setA(e.target.value)} data-test="span-start" />
+      <input className="input mono" style={{ width: 104, flexShrink: 0 }} aria-label="Start frequency" value={a} onChange={(e) => setA(e.target.value)} data-test="span-start" />
       <span className="muted">…</span>
-      <input className="input mono" style={{ width: 92 }} aria-label="Stop frequency" value={b} onChange={(e) => setB(e.target.value)} data-test="span-stop" />
+      <input className="input mono" style={{ width: 104, flexShrink: 0 }} aria-label="Stop frequency" value={b} onChange={(e) => setB(e.target.value)} data-test="span-stop" />
       <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
     </form>
     {/* Outside the form: clicking it must not count as leaving the fields with their old values. */}
     <button type="button" className="btn small" disabled={!zoomed} onClick={reset} data-test="span-full">Full</button>
-    </>
+    </div>
   );
 }
 

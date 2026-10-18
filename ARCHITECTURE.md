@@ -18,7 +18,8 @@ screen cannot:
    instrument is out of reach, and every field says which SCPI header it is.
 3. **Things only a computer can do with it.** Deep-memory capture (up to 25 Mpts
    per channel) with zoom, measurement and CSV; an FFT with stated window and
-   scaling, peak list and THD; a Bode sweep driven by the built-in generator
+   scaling, peak list and THD; a Bode sweep driven by the built-in generator or
+   the STM32 board's Si5351 or DAC
    (the scope's own Bode option cannot return its curve over SCPI); presets
    (setup files) on disk; screenshots; a SCPI console with completion from the
    guide; measurements with running statistics and an independent cross-check.
@@ -47,8 +48,9 @@ server/  Node 22.18+, TypeScript run directly (type stripping). Owns the link:
   │      as a Duplex stream) or vicp.ts (LeCroy VICP), scpi.ts (framing, strict
   │      request/reply, exclusive sections), scope.ts (value mirror, live loop,
   │      measurements) with drivers/rigol.ts or drivers/lecroy.ts for what
-  │      differs by brand, deep.ts, bode.ts, discover.ts, store.ts (settings +
-  │      presets), main.ts (routes only).
+  │      differs by brand, deep.ts, bode.ts + generators.ts (GEN OUT or the
+  │      board), board.ts (the STM32 board's serial link, Si5351 and DAC),
+  │      discover.ts, store.ts (settings + presets), main.ts (routes only).
   │ imports                                  ┌──────────────────────────────┐
   ▼                                          │ sim/  the simulated MHO984 + │
 core/    Pure TypeScript. No DOM, no node:   │ instrument.ts (dispatcher on │
@@ -64,6 +66,8 @@ core/    Pure TypeScript. No DOM, no node:   │ instrument.ts (dispatcher on �
            registry/ manual.json (generated from the guide), controls.ts
                      (curation), labels.ts, measurements.ts; lecroy.ts (the
                      LeCroy table), families.ts (which table, which features)
+           board/    the STM32 board's 16-byte command link (packets, ACK
+                     reader that skips the firmware's printf log, Si5351 payloads)
 shared/  constants.json (rule 11) and themes.json (rule 1).
 ```
 
@@ -95,6 +99,48 @@ Pulse; a bus's RS232 fields only while *that* bus is RS232).
 The same list drives: the server's read/write/parse, the simulator's command
 dispatcher and defaults, every inspector field, the All-settings view, and the
 console's completion.
+
+## Lifetime
+
+The server lives as long as a window does: each window holds a Server-Sent
+Events stream, and `server/main.ts` counts them. When the last one closes and
+none returns within `server.no_viewer_stop_s` (a reload, a laptop waking up),
+it disconnects the scope and the board and exits; a running Bode sweep or edge
+capture is finished first, and shutdown waits up to `server.job_stop_wait_ms`
+for a stopped one to put the settings back. Quit (`POST /api/quit`) does the
+same at once, asking first while a job runs. Never before a window has opened
+(the browser may be slow to start); `--stay` keeps it up without one (tests,
+development). `server/test/lifetime.test.ts` runs the real process.
+
+## Updates
+
+The installers write `build.json` into the installed copy: branch, commit,
+whether the source had uncommitted changes, and whether it came from git or
+from the updater. `server/update.ts` asks GitHub's API for the newest commit of
+a branch and `compare/<installed>...<newest>` for what is missing (anonymous: 60
+requests an hour, so the automatic check is once a day). Update downloads the
+commit's tarball from codeload, refuses it unless `shared/constants.json` names
+this app and the platform's installer is there, and runs that installer in a
+detached process (`update-run.sh` / `.ps1` in the state folder, log in
+`update/update.log`) with `MHO_STUDIO_UPDATE_BRANCH/COMMIT` set and the PATH of
+the running Node (an app started from Finder has a bare PATH). The installer
+stops this server as it always does; the runner then starts the new copy. A
+version on GitHub lower than the installed one is never offered.
+
+## One query on the line at a time
+
+`ScpiClient.exclusive()` queues sections on one promise chain; a call nested
+inside a section runs directly. "Inside" is an `AsyncLocalStorage` value, and
+Node carries it into every timer and callback started in the section — the USB
+backstop timer, the `onClose` → reconnect it fires, the live loop the reconnect
+starts. So the value is the section's own id and counts only while that section
+still holds the line; a stale id queues like any caller, and `onClose` runs
+outside any section. (Until 0.5.1 it was a plain flag: after the first lost
+link the reconnected live loop skipped the queue, its queries interleaved with
+settings reads, every reply was paired with the question before — `:CHAN1:SCAL?`
+→ "OMEG" — and a starved query lost the link again every ~10 s.)
+`server/test/scpi.test.ts` holds both leaks against a fake instrument that
+counts outstanding queries.
 
 ## Data flow — one screen of live traces
 
@@ -273,14 +319,28 @@ same code runs on both families:
 
 ## Data flow — Bode sweep
 
-`server/bode.ts`: read every setting it will touch; set GEN n to a sine at the
-amplitude, both channels DC/0 V offset/fitted scale, edge trigger on the input
-channel; then per frequency: set it, choose the 1-2-5 timebase showing ≥ 4
+`server/bode.ts`: read every setting it will touch; prepare the generator
+(`server/generators.ts`: GEN n to a sine at the amplitude, a board CLK output
+off at the start frequency with its drive set, or note what the board's DAC
+plays), both channels at 0 V offset with a fitted scale — DC-coupled for GEN
+OUT, AC for the board's outputs, which sit on a DC level —
+edge trigger on the input channel; then per frequency: set it **and take the
+frequency the generator reports back**, choose the 1-2-5 timebase showing ≥ 4
 periods, wait (settle or two screens), read both channels, rescale a channel
-that is clipped or under 1.5 div and retry, and take gain and phase from
-`core/dsp/lockin.ts` phasors of the two records (same acquisition, same time
-origin). The corner is interpolated in log-frequency. Everything touched is
-written back at the end, generator output last.
+that is clipped or under 1.5 div and retry, check that the input channel
+repeats at that frequency (stop at the first point if not — it is not wired),
+and take gain and phase from `core/dsp/lockin.ts` phasors of the two records
+(same acquisition, same time origin). The corner is interpolated in
+log-frequency. Everything touched is written back at the end, scope generator
+output last, then the board output (a CLK output's frequency, on/off and
+drive; the DAC is stopped).
+
+The board (`server/board.ts`) is a second link beside the scope's: a serial
+port opened exclusively (Board Test GUI cannot share it), speed probed at
+115200 → 921600 baud with Ping, firmware protocol ≥ v16 required, one command
+in flight, each ACK matched by sequence number so a late answer to an abandoned
+command is never taken for the next one's. While a sweep runs the board is held
+("busy") and Connect, Disconnect and Detect are refused.
 
 ## Where state lives
 
@@ -292,6 +352,7 @@ written back at the end, generator output last.
 | Deep capture | server memory, 16-bit codes (50 MB per 25 Mpt channel) | no |
 | Measurement slots and statistics | server memory | no |
 | Bode result | server memory; CSV export | no |
+| STM32 board connection | server memory; connected only between Connect and Disconnect | no |
 | View, section, cursors, persistence, theme | browser `localStorage` | yes |
 
 ## How to add a new …

@@ -25,6 +25,7 @@ import { startSim } from "../sim/server.ts";
 import { startLecroySim } from "../sim/lecroy-server.ts";
 import { startSiglentSim } from "../sim/siglent-server.ts";
 import { HttpError } from "./errors.ts";
+import { networkHint } from "./discover.ts";
 import { RigolDriver } from "./drivers/rigol.ts";
 import { LecroyDriver } from "./drivers/lecroy.ts";
 import { SiglentDriver } from "./drivers/siglent.ts";
@@ -236,7 +237,11 @@ export class ScopeService {
     if (host === "USB") return e.message;
     if (code === "ECONNREFUSED" && this.link.protocol === "vicp") return `${host} refused port ${port}. On the LeCroy, Utilities → Utilities Setup → Remote must be set to TCPIP (VICP), and the Windows firewall on the scope must let port ${port} in.`;
     if (code === "ECONNREFUSED") return `${host} refused port ${port}. Is it the oscilloscope, and is LAN enabled (Utility → I/O)? A LeCroy listens on port ${C.lecroy.vicp_port} (VICP).`;
-    if (code === "ETIMEDOUT" || /within/.test(e.message)) return `No answer from ${host}:${port}. Check the cable, the IP address and that the PC is on the same network.`;
+    const unreachable = code === "ETIMEDOUT" || code === "EHOSTUNREACH" || code === "ENETUNREACH" || /within/.test(e.message);
+    // The commonest cause on a direct cable: this computer is not in the scope's network at all.
+    const hint = unreachable ? networkHint(host) : null;
+    if (hint) return `No answer from ${host}:${port}. ${hint}`;
+    if (code === "ETIMEDOUT" || /within/.test(e.message)) return `No answer from ${host}:${port}. Check the cable, the IP address and that LAN is on at the scope (RIGOL/T3DSO: Utility → I/O → LAN).`;
     if (code === "EHOSTUNREACH" || code === "ENETUNREACH") return `${host} is unreachable from this computer (${code}). On macOS, check System Settings → Privacy & Security → Local Network.`;
     return e.message;
   }

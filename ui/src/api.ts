@@ -41,6 +41,7 @@ export type BodePoint = { hz: number; gainDb: number; phaseDeg: number; vin: num
 export type BodeState = {
   running: boolean;
   config: Record<string, unknown> | null;
+  generator: string | null;
   points: BodePoint[];
   step: number;
   total: number;
@@ -49,6 +50,42 @@ export type BodeState = {
   startedAt: string | null;
   notes: string[];
 };
+export type ClkChannel = { ch: number; on: boolean; pllB: boolean; integer: boolean; shared: boolean; unreachable: boolean; sweeping: boolean; drive: number; hz: number };
+/** The STM32H743 board and its Si5351 (server/board.ts). */
+export type BoardState = {
+  state: "idle" | "connecting" | "connected" | "error";
+  port: string | null;
+  sim: boolean;
+  baud: number | null;
+  version: { protocol: number; firmware: number; built: string } | null;
+  si5351: { present: boolean; status: number; address: number; i2cErrors: number; xtalHz: number; checked: string } | null;
+  clk: ClkChannel[];
+  /** DAC1 (PC4 and PA5): source 0 idle, 1 FDM, 2 sine, 0x10 + slot a stored waveform; hz for a sine. */
+  dac: { running: boolean; source: number; length: number; rateHz: number; hz: number | null } | null;
+  busy: string | null;
+  error: string | null;
+  log: string[];
+};
+/** The in-app updater (server/update.ts). */
+export type UpdateCommit = { sha: string; date: string; message: string; author: string };
+export type UpdateState = {
+  version: string;
+  build: { branch: string; commit: string; dirty: boolean; installedAt: string; from: string } | null;
+  where: "installed" | "source" | "exe";
+  branch: string;
+  checking: boolean;
+  checkedAt: string | null;
+  latest: (UpdateCommit & { version: string | null }) | null;
+  newer: UpdateCommit[];
+  newerCount: number;
+  available: boolean;
+  ahead: number;
+  note: string | null;
+  installing: string | null;
+  error: string | null;
+  autoCheck: boolean;
+};
+export type BoardPortInfo = { path: string; label: string; likely: boolean };
 export type Summary = { n: number; min: number | null; mean: number | null; max: number | null; std: number | null };
 export type Edge = { i: number; t: number; kind: "rise" | "fall"; dur: number; under: boolean; seg: number };
 export type Anomaly = { kind: "glitch" | "runt"; polarity: "high" | "low"; t: number; width: number | null; peak: number | null; seg: number };
@@ -110,6 +147,8 @@ export type Live = {
   traffic: Traffic[];
   stats: LinkStats | null;
   bode: BodeState | null;
+  board: BoardState | null;
+  update: UpdateState | null;
   burst: BurstState | null;
   deep: DeepMeta | null;
   deepProgress: DeepProgress | null;
@@ -134,6 +173,8 @@ let state: Live = {
   traffic: [],
   stats: null,
   bode: null,
+  board: null,
+  update: null,
   burst: null,
   deep: null,
   deepProgress: null,
@@ -200,6 +241,26 @@ export class ApiError extends Error {
 let confirmer: (message: string) => Promise<boolean> = async (m) => window.confirm(m);
 export function setConfirmer(fn: (message: string) => Promise<boolean>): void {
   confirmer = fn;
+}
+/** Ask the person in the app's own confirm dialog. */
+export const ask = (message: string): Promise<boolean> => confirmer(message);
+
+/** Set when the person quit: the window shows that the app has stopped instead of "server not reachable". */
+let quitListeners = new Set<() => void>();
+export let quitted = false;
+export function onQuit(fn: () => void): () => void {
+  quitListeners.add(fn);
+  return () => quitListeners.delete(fn);
+}
+/** Quit from the window: the server disconnects the scope and the board, then stops. */
+export async function quitApp(): Promise<void> {
+  const busy = getLive().board?.state === "connected" ? " and the STM32 board" : "";
+  if (!(await ask(`Quit MHO Studio? The oscilloscope${busy} is disconnected and the app stops. The tile starts it again.`))) return;
+  const ok = await attempt(() => post("quit"));
+  if (!ok) return;
+  quitted = true;
+  for (const f of quitListeners) f();
+  quitListeners = new Set();
 }
 
 async function raw<T>(path: string, body: unknown, extraHeaders: Record<string, string> = {}): Promise<T> {
@@ -307,6 +368,8 @@ export async function connectStream(): Promise<void> {
   on<{ counter: number | null; dvm: number | null }>("readings", (readings) => set({ readings }));
   on<LinkStats>("stats", (stats) => set({ stats }));
   on<BodeState>("bode", (bode) => set({ bode }));
+  on<BoardState>("board", (board) => set({ board }));
+  on<UpdateState>("update", (update) => set({ update }));
   on<BurstState>("burst", (burst) => set({ burst }));
   on<DeepMeta>("deep", (deep) => set({ deep, deepProgress: null }));
   on<DeepProgress>("deep-progress", (deepProgress) => set({ deepProgress }));
